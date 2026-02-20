@@ -2,81 +2,86 @@
 
 import { useState } from "react";
 import { auth } from "@/lib/firebase/client";
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+} from "firebase/auth";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  async function signIn() {
-    setErr("");
+  async function handleLogin() {
     setLoading(true);
+    setError("");
     try {
-      const auth = getFirebaseAuth();
       await signInWithEmailAndPassword(auth, email, password);
       window.location.href = "/drafts/new";
     } catch (e: any) {
-      setErr(e?.message ?? "login failed");
+      setError(e.message ?? "ログインに失敗しました");
     } finally {
       setLoading(false);
     }
   }
 
-  async function signUp() {
-    setErr("");
+  async function handleSignup() {
     setLoading(true);
+    setError("");
     try {
-      const auth = getFirebaseAuth();
       await createUserWithEmailAndPassword(auth, email, password);
       window.location.href = "/drafts/new";
     } catch (e: any) {
-      setErr(e?.message ?? "signup failed");
+      setError(e.message ?? "アカウント作成に失敗しました");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main style={{ maxWidth: 420, margin: "0 auto", padding: 24 }}>
-      <h1 style={{ fontSize: 22, marginBottom: 12 }}>ログイン</h1>
+    <div
+      style={{
+        maxWidth: 400,
+        margin: "100px auto",
+        padding: 24,
+        border: "1px solid #ddd",
+        borderRadius: 8,
+      }}
+    >
+      <h1 style={{ marginBottom: 20 }}>ログイン</h1>
 
-      <label style={{ display: "block", fontSize: 12, marginBottom: 6 }}>Email</label>
-      <input
-        style={{ width: "100%", padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-      />
+      <div style={{ display: "grid", gap: 12 }}>
+        <input
+          type="email"
+          placeholder="メールアドレス"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          style={{ padding: 8 }}
+        />
 
-      <label style={{ display: "block", fontSize: 12, marginTop: 12, marginBottom: 6 }}>
-        Password
-      </label>
-      <input
-        type="password"
-        style={{ width: "100%", padding: 10, border: "1px solid #ddd", borderRadius: 8 }}
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-      />
+        <input
+          type="password"
+          placeholder="パスワード"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          style={{ padding: 8 }}
+        />
 
-      {err ? <p style={{ color: "crimson", marginTop: 10 }}>{err}</p> : null}
-
-      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-        <button
-          onClick={signIn}
-          disabled={loading}
-          style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #111", background: "#111", color: "#fff" }}
-        >
-          {loading ? "…" : "ログイン"}
+        <button onClick={handleLogin} disabled={loading}>
+          {loading ? "処理中..." : "ログイン"}
         </button>
-        <button
-          onClick={signUp}
-          disabled={loading}
-          style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #111", background: "#fff", color: "#111" }}
-        >
-          {loading ? "…" : "新規登録"}
+
+        <button onClick={handleSignup} disabled={loading}>
+          {loading ? "処理中..." : "新規登録"}
         </button>
+
+        {error && (
+          <div style={{ color: "red", fontSize: 14 }}>
+            {error}
+          </div>
+        )}
       </div>
-    </main>
+    </div>
   );
 }

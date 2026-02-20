@@ -10,7 +10,7 @@ export async function POST(req: Request) {
     const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
     if (!token) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
-    const decoded = await adminAuth().verifyIdToken(token);
+    const decoded = await adminAuth.verifyIdToken(token);
     const userId = decoded.uid;
 
     const body = await req.json();
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
       currency: "JPY",
     };
 
-    const ref = await adminDb().collection("drafts").add({
+    const ref = await adminDb.collection("drafts").add({
       userId,
       instructionText,
       aiJson: {},
