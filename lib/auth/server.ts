@@ -1,3 +1,4 @@
+// lib/auth/server.ts
 import { adminAuth } from "@/lib/firebase/admin";
 
 export async function verifyBearer(req: Request) {

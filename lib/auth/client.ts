@@ -1,3 +1,4 @@
+// lib/auth/client.ts
 import { auth } from "@/lib/firebase/client";
 
 export async function getIdToken(): Promise<string> {
