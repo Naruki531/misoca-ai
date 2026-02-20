@@ -1,423 +1,409 @@
 // app/drafts/[id]/page.tsx
 "use client";
 
-export const dynamic = "force-dynamic";
-
 import "./drafts.css";
-
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { onAuthStateChanged } from "firebase/auth";
-import { auth } from "@/lib/firebase/client";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { getIdToken } from "@/lib/auth/client";
 
-type Client = { id: string; name: string };
-type Issuer = { id: string; name: string; detail?: string; address?: string; contact?: string };
-type BankAccount = {
-  id: string;
-  bankName: string;
-  branchName: string;
-  accountType: string;
-  accountNumber: string;
-  accountName: string;
-};
+type TaxRate = 0 | 8 | 10;
 
-type DraftItem = {
+type InvoiceItem = {
   id: string;
   code: string;
   name: string;
   qty: number;
   unit: string;
   unitPrice: number;
-  taxRate: number; // 10 / 8 / 0
-  amount: number; // qty * unitPrice
+  taxRate: TaxRate;
+  amount: number; // 自動計算（qty * unitPrice）
 };
 
 type Draft = {
-  clientId: string | null;
-  issueDate: string; // YYYY-MM-DD
-  dueDate: string | null; // YYYY-MM-DD
-  invoiceNo: string;
+  id: string;
+  instructionText: string;
+
+  // master refs
+  clientId: string;
+  issuerId: string;
+  bankAccountIds: string[];
+
+  // invoice header
   subject: string;
+  issueDate: string; // YYYY-MM-DD
+  dueDate: string; // YYYY-MM-DD
+  invoiceNo: string;
 
-  issuerId: string | null;
+  // items
+  items: InvoiceItem[];
 
-  items: DraftItem[];
-
+  // totals
+  taxDefault: TaxRate;
   subTotal: number;
   taxTotal: number;
   grandTotal: number;
 
-  notes: string;
+  note: string;
 
-  bankAccountIds: string[];
-  rawInstruction: string;
+  updatedAt?: any;
+  createdAt?: any;
 };
 
-type AiParsed = {
-  clientName: string;
-  subject: string;
-  issueDate: string; // YYYY-MM-DD
-  dueDate: string | null;
-  notes?: string;
-  items: Array<{
-    code?: string;
-    name: string;
-    qty: number;
-    unit?: string;
-    unitPrice: number;
-    taxRate?: number;
-  }>;
+type Client = { id: string; name: string; email?: string };
+type Issuer = { id: string; name: string };
+type BankAccount = {
+  id: string;
+  bankName: string;
+  branchName: string;
+  branchCode?: string;
+  accountType: string;
+  accountNumber: string;
+  accountName: string;
 };
 
-function safeNumber(v: any) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+function uid() {
+  return Math.random().toString(36).slice(2, 10);
 }
 
-function calcTotals(items: DraftItem[]) {
-  let subTotal = 0;
-  let taxTotal = 0;
-
-  for (const it of items) {
-    const amount = safeNumber(it.amount);
-    subTotal += amount;
-
-    const rate = safeNumber(it.taxRate);
-    taxTotal += Math.floor(amount * (rate / 100));
-  }
-
-  const grandTotal = subTotal + taxTotal;
-  return { subTotal, taxTotal, grandTotal };
+function n(v: any) {
+  const x = Number(v);
+  return Number.isFinite(x) ? x : 0;
 }
 
-function todayYYYYMMDD() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
+function formatYen(v: number) {
+  return `${Math.round(v).toLocaleString("ja-JP")}円`;
 }
 
-function newItem(): DraftItem {
-  return {
-    id: crypto.randomUUID(),
+function calcAmount(qty: number, unitPrice: number) {
+  return Math.round(n(qty) * n(unitPrice));
+}
+
+function calcTotals(items: InvoiceItem[]) {
+  const sub = items.reduce((s, it) => s + n(it.amount), 0);
+  const tax = items.reduce((s, it) => s + Math.round(n(it.amount) * (n(it.taxRate) / 100)), 0);
+  const total = sub + tax;
+  return { subTotal: sub, taxTotal: tax, grandTotal: total };
+}
+
+function ensureMinItems(items: InvoiceItem[], min = 3) {
+  if (items.length >= min) return items;
+  const add = Array.from({ length: min - items.length }).map(() => ({
+    id: uid(),
     code: "",
     name: "",
     qty: 1,
     unit: "",
     unitPrice: 0,
-    taxRate: 10, // デフォ10%
+    taxRate: 10 as TaxRate,
     amount: 0,
-  };
+  }));
+  return [...items, ...add];
 }
 
-function normalizeName(s: string) {
-  return (s ?? "")
-    .toString()
-    .trim()
-    .replace(/\s+/g, "")
-    .toLowerCase();
-}
-
-export default function DraftEditPage() {
+export default function DraftDetailPage({ params }: { params: { id: string } }) {
   const router = useRouter();
-  const params = useParams<{ id: string }>();
   const draftId = params.id;
 
   const [loading, setLoading] = useState(true);
-  const [msg, setMsg] = useState("");
+  const [saving, setSaving] = useState(false);
 
+  const [msg, setMsg] = useState<string>("");
+  const [err, setErr] = useState<string>("");
+
+  // masters
   const [clients, setClients] = useState<Client[]>([]);
   const [issuers, setIssuers] = useState<Issuer[]>([]);
   const [banks, setBanks] = useState<BankAccount[]>([]);
 
+  // recipients (clientsのemailを候補にする)
+  const [mailTo, setMailTo] = useState("");
+  const [recipients, setRecipients] = useState<Array<{ id: string; email: string; label?: string }>>(
+    []
+  );
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+  const [outMsg, setOutMsg] = useState<string>("");
+
+  // draft form state
   const [draft, setDraft] = useState<Draft>({
-    clientId: null,
-    issueDate: todayYYYYMMDD(),
-    dueDate: null,
-    invoiceNo: "",
+    id: draftId,
+    instructionText: "",
+
+    clientId: "",
+    issuerId: "",
+    bankAccountIds: [],
+
     subject: "",
-    issuerId: null,
-    items: [],
+    issueDate: "",
+    dueDate: "",
+    invoiceNo: "",
+
+    items: ensureMinItems([]),
+
+    taxDefault: 10,
     subTotal: 0,
     taxTotal: 0,
     grandTotal: 0,
-    notes: "",
-    bankAccountIds: [],
-    rawInstruction: "",
+
+    note: "",
   });
 
-  const totals = useMemo(() => calcTotals(draft.items), [draft.items]);
-
-  const saveTimer = useRef<any>(null);
-  const isDirty = useRef(false);
-
-  const [aiLoading, setAiLoading] = useState(false);
-
-  function markDirty(next: Draft) {
-    isDirty.current = true;
-    setDraft(next);
-
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      if (isDirty.current) void saveDraft(next, true);
-    }, 800);
-  }
-
-  async function apiFetch(path: string, init?: RequestInit) {
-    const token = await getIdToken();
-    const headers: any = { ...(init?.headers ?? {}) };
-    headers.authorization = `Bearer ${token}`;
-    return await fetch(path, { ...init, headers });
-  }
-
-  async function loadMasters() {
-    const [c, i, b] = await Promise.all([
-      apiFetch("/api/clients").then((r) => r.json()),
-      apiFetch("/api/issuers").then((r) => r.json()),
-      apiFetch("/api/bank-accounts").then((r) => r.json()),
-    ]);
-    if (c?.ok) setClients(c.clients ?? []);
-    if (i?.ok) setIssuers(i.issuers ?? []);
-    if (b?.ok) setBanks(b.bankAccounts ?? []);
-  }
-
-  async function loadDraft() {
-    const res = await apiFetch(`/api/drafts/${draftId}`);
-    const json = await res.json();
-    if (!json.ok) throw new Error(json.error);
-
-    const d = json.draft ?? {};
-
-    const items: DraftItem[] = Array.isArray(d.items)
-      ? d.items.map((it: any) => {
-          const qty = safeNumber(it.qty);
-          const unitPrice = safeNumber(it.unitPrice);
-          const amount = Math.floor(qty * unitPrice);
-          return {
-            id: (it.id ?? crypto.randomUUID()).toString(),
-            code: (it.code ?? "").toString(),
-            name: (it.name ?? "").toString(),
-            qty,
-            unit: (it.unit ?? "").toString(),
-            unitPrice,
-            taxRate: Number.isFinite(Number(it.taxRate)) ? Number(it.taxRate) : 10,
-            amount,
-          };
-        })
-      : [];
-
-    const t = calcTotals(items);
-
-    setDraft({
-      clientId: d.clientId ?? null,
-      issueDate: d.issueDate ?? todayYYYYMMDD(),
-      dueDate: d.dueDate ?? null,
-      invoiceNo: d.invoiceNo ?? "",
-      subject: d.subject ?? "",
-      issuerId: d.issuerId ?? null,
-      items,
-      subTotal: safeNumber(d.subTotal) || t.subTotal,
-      taxTotal: safeNumber(d.taxTotal) || t.taxTotal,
-      grandTotal: safeNumber(d.grandTotal) || t.grandTotal,
-      notes: d.notes ?? "",
-      bankAccountIds: Array.isArray(d.bankAccountIds) ? d.bankAccountIds : [],
-      rawInstruction: d.rawInstruction ?? "",
-    });
-
-    isDirty.current = false;
-  }
-
-  async function saveDraft(payload: Draft, silent = false) {
-    try {
-      const computed = calcTotals(payload.items);
-      const body = {
-        ...payload,
-        ...computed,
-        items: payload.items.map((it) => ({
-          ...it,
-          qty: safeNumber(it.qty),
-          unitPrice: safeNumber(it.unitPrice),
-          taxRate: safeNumber(it.taxRate),
-          amount: Math.floor(safeNumber(it.qty) * safeNumber(it.unitPrice)),
-        })),
-      };
-
-      const res = await apiFetch(`/api/drafts/${draftId}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error);
-
-      isDirty.current = false;
-      if (!silent) setMsg(`保存した: ${draftId}`);
-    } catch (e: any) {
-      if (!silent) setMsg("保存失敗: " + (e.message ?? e));
-    }
-  }
-
+  // ========= Load =========
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
-      if (!u) {
-        router.replace("/login");
-        return;
-      }
+    (async () => {
+      setLoading(true);
+      setErr("");
+      setMsg("");
       try {
-        setLoading(true);
-        setMsg("");
-        await loadMasters();
-        await loadDraft();
+        const token = await getIdToken();
+
+        const [dRes, cRes, iRes, bRes] = await Promise.all([
+          fetch(`/api/drafts/${draftId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          }),
+          fetch(`/api/clients`, {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          }),
+          fetch(`/api/issuers`, {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          }),
+          fetch(`/api/bank-accounts`, {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          }),
+        ]);
+
+        const dj = await dRes.json();
+        if (!dRes.ok || !dj?.ok) throw new Error(dj?.error || "failed to load draft");
+
+        const cj = await cRes.json().catch(() => ({}));
+        const ij = await iRes.json().catch(() => ({}));
+        const bj = await bRes.json().catch(() => ({}));
+
+        const loaded: Draft = {
+          ...draft,
+          ...dj.draft,
+          id: draftId,
+          items: ensureMinItems((dj.draft?.items || []).map((it: any) => ({
+            id: String(it.id || uid()),
+            code: String(it.code || ""),
+            name: String(it.name || ""),
+            qty: n(it.qty || 1),
+            unit: String(it.unit || ""),
+            unitPrice: n(it.unitPrice || 0),
+            taxRate: (n(it.taxRate || dj.draft?.taxDefault || 10) as TaxRate) || 10,
+            amount: n(it.amount || calcAmount(it.qty || 1, it.unitPrice || 0)),
+          }))),
+          taxDefault: (n(dj.draft?.taxDefault ?? 10) as TaxRate) || 10,
+        };
+
+        // totals re-calc
+        const totals = calcTotals(loaded.items);
+        loaded.subTotal = totals.subTotal;
+        loaded.taxTotal = totals.taxTotal;
+        loaded.grandTotal = totals.grandTotal;
+
+        setDraft(loaded);
+
+        const clientList: Client[] = (cj?.clients || []).map((x: any) => ({
+          id: String(x.id),
+          name: String(x.name || ""),
+          email: x.email ? String(x.email) : undefined,
+        }));
+        const issuerList: Issuer[] = (ij?.issuers || []).map((x: any) => ({
+          id: String(x.id),
+          name: String(x.name || ""),
+        }));
+        const bankList: BankAccount[] = (bj?.bankAccounts || []).map((x: any) => ({
+          id: String(x.id),
+          bankName: String(x.bankName || ""),
+          branchName: String(x.branchName || ""),
+          branchCode: x.branchCode ? String(x.branchCode) : "",
+          accountType: String(x.accountType || ""),
+          accountNumber: String(x.accountNumber || ""),
+          accountName: String(x.accountName || ""),
+        }));
+
+        setClients(clientList);
+        setIssuers(issuerList);
+        setBanks(bankList);
+
+        // recipients
+        const r = clientList
+          .filter((c) => !!c.email)
+          .map((c) => ({
+            id: c.id,
+            email: c.email!,
+            label: c.name || c.email!,
+          }));
+        setRecipients(r);
+        if (!mailTo && r[0]?.email) setMailTo(r[0].email);
       } catch (e: any) {
-        setMsg("読み込み失敗: " + (e.message ?? e));
+        setErr(e?.message ?? String(e));
       } finally {
         setLoading(false);
       }
-    });
-    return () => unsub();
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftId]);
 
-  async function addClient() {
-    const name = window.prompt("取引先名（必須）");
-    if (!name) return;
-    const res = await apiFetch("/api/clients", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name }),
+  // ========= Derived =========
+  const selectedBankText = useMemo(() => {
+    const ids = draft.bankAccountIds || [];
+    if (!ids.length) return "";
+    const b0 = banks.find((b) => b.id === ids[0]);
+    if (!b0) return "";
+    return `${b0.bankName} ${b0.branchName}${b0.branchCode ? `(${b0.branchCode})` : ""} ${
+      b0.accountType
+    } ${b0.accountNumber} ${b0.accountName}`;
+  }, [draft.bankAccountIds, banks]);
+
+  // ========= Handlers =========
+  function updateItem(idx: number, patch: Partial<InvoiceItem>) {
+    setDraft((prev) => {
+      const items = prev.items.slice();
+      const cur = items[idx];
+      if (!cur) return prev;
+      const next: InvoiceItem = { ...cur, ...patch };
+
+      // amount auto
+      const qty = n(next.qty);
+      const unitPrice = n(next.unitPrice);
+      next.amount = calcAmount(qty, unitPrice);
+
+      // if taxRate empty -> fallback
+      if (next.taxRate === (undefined as any) || next.taxRate === null) {
+        next.taxRate = prev.taxDefault;
+      }
+
+      items[idx] = next;
+
+      const totals = calcTotals(items);
+      return { ...prev, items, ...totals };
     });
-    const json = await res.json();
-    if (!json.ok) return setMsg("取引先追加失敗: " + json.error);
-    await loadMasters();
-    markDirty({ ...draft, clientId: json.id });
   }
 
-  async function addIssuer() {
-    const name = window.prompt("自社名（1行目必須）");
-    if (!name) return;
-    const detail = window.prompt("請求元詳細（任意）") ?? "";
-    const address = window.prompt("住所（任意）") ?? "";
-    const contact = window.prompt("連絡先（任意）") ?? "";
-
-    const res = await apiFetch("/api/issuers", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name, detail, address, contact }),
-    });
-    const json = await res.json();
-    if (!json.ok) return setMsg("請求元追加失敗: " + json.error);
-    await loadMasters();
-    markDirty({ ...draft, issuerId: json.id });
-  }
-
-  async function addBank() {
-    const bankName = window.prompt("銀行名");
-    if (!bankName) return;
-    const branchName = window.prompt("支店名");
-    if (!branchName) return;
-    const accountType = window.prompt("口座種別（例：普通）");
-    if (!accountType) return;
-    const accountNumber = window.prompt("口座番号");
-    if (!accountNumber) return;
-    const accountName = window.prompt("口座名義");
-    if (!accountName) return;
-
-    const res = await apiFetch("/api/bank-accounts", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ bankName, branchName, accountType, accountNumber, accountName }),
-    });
-    const json = await res.json();
-    if (!json.ok) return setMsg("振込先追加失敗: " + json.error);
-    await loadMasters();
-  }
-
-  async function generateInvoiceNo() {
-    try {
-      const res = await apiFetch("/api/invoices/next-number", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ issueDate: draft.issueDate }),
+  function addRow() {
+    setDraft((prev) => {
+      if (prev.items.length >= 80) return prev;
+      const items = prev.items.concat({
+        id: uid(),
+        code: "",
+        name: "",
+        qty: 1,
+        unit: "",
+        unitPrice: 0,
+        taxRate: prev.taxDefault,
+        amount: 0,
       });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error);
-      markDirty({ ...draft, invoiceNo: json.invoiceNo });
+      const totals = calcTotals(items);
+      return { ...prev, items, ...totals };
+    });
+  }
+
+  function removeRow(idx: number) {
+    setDraft((prev) => {
+      const items = prev.items.slice();
+      items.splice(idx, 1);
+      const fixed = ensureMinItems(items);
+      const totals = calcTotals(fixed);
+      return { ...prev, items: fixed, ...totals };
+    });
+  }
+
+  async function saveDraft() {
+    setSaving(true);
+    setErr("");
+    setMsg("");
+    try {
+      const token = await getIdToken();
+
+      const res = await fetch(`/api/drafts/${draftId}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          instructionText: draft.instructionText,
+
+          clientId: draft.clientId,
+          issuerId: draft.issuerId,
+          bankAccountIds: draft.bankAccountIds,
+
+          subject: draft.subject,
+          issueDate: draft.issueDate,
+          dueDate: draft.dueDate,
+          invoiceNo: draft.invoiceNo,
+
+          items: draft.items,
+          taxDefault: draft.taxDefault,
+          subTotal: draft.subTotal,
+          taxTotal: draft.taxTotal,
+          grandTotal: draft.grandTotal,
+
+          note: draft.note,
+        }),
+      });
+
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.ok) throw new Error(j?.error || `save failed: ${res.status}`);
+
+      setMsg(`保存した: ${draftId}`);
     } catch (e: any) {
-      setMsg("採番失敗: " + (e.message ?? e));
+      setErr(e?.message ?? String(e));
+    } finally {
+      setSaving(false);
     }
   }
 
-  function updateItem(idx: number, patch: Partial<DraftItem>) {
-    const items = [...draft.items];
-    const cur = items[idx];
-    const next: DraftItem = { ...cur, ...patch };
-    const qty = safeNumber(next.qty);
-    const unitPrice = safeNumber(next.unitPrice);
-    next.qty = qty;
-    next.unitPrice = unitPrice;
-    next.taxRate = safeNumber(next.taxRate) || 0;
-    next.amount = Math.floor(qty * unitPrice);
-    items[idx] = next;
-    markDirty({ ...draft, items });
-  }
-
-  function addItemRow() {
-    if (draft.items.length >= 80) return setMsg("明細は最大80行まで");
-    markDirty({ ...draft, items: [...draft.items, newItem()] });
-  }
-
-  function removeItemRow(idx: number) {
-    const items = draft.items.filter((_, i) => i !== idx);
-    markDirty({ ...draft, items });
-  }
-
-  function toggleBank(id: string) {
-    const exists = draft.bankAccountIds.includes(id);
-    let next = exists ? draft.bankAccountIds.filter((x) => x !== id) : [...draft.bankAccountIds, id];
-    if (next.length > 10) return setMsg("振込先は最大10件まで");
-    markDirty({ ...draft, bankAccountIds: next });
-  }
-
-  // ✅ AI解析→フォーム反映
-  async function applyAiToForm(mode: "replace" | "append") {
+  async function applyAi(mode: "header" | "detail") {
+    // header: 上書き（主に件名/日付/取引先/明細をまるっと）
+    // detail: 明細追記（既存を残して追加）
+    setErr("");
+    setMsg("");
     try {
-      const text = (draft.rawInstruction ?? "").trim();
-      if (!text) return setMsg("指示文が空");
-
-      setAiLoading(true);
-      setMsg("");
-
-      const res = await apiFetch("/api/ai/parse-invoice", {
+      const token = await getIdToken();
+      const res = await fetch("/api/ai/parse-invoice", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ instructionText: text }),
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          text: draft.instructionText,
+          mode,
+          taxDefault: draft.taxDefault,
+        }),
       });
-      const json = await res.json();
-      if (!json.ok) throw new Error(json.error);
 
-      const ai: AiParsed = json.data;
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.ok) throw new Error(j?.error || `AI failed: ${res.status}`);
 
-      // 取引先名 -> clients から突合（完全一致寄り）
-      let nextClientId: string | null = draft.clientId;
-      const aiClientKey = normalizeName(ai.clientName);
-      if (aiClientKey) {
-        const hit = clients.find((c) => normalizeName(c.name) === aiClientKey);
-        if (hit) nextClientId = hit.id;
-        // 見つからない場合は「未選択のまま」(後で自動登録も可能)
-      }
+      // 期待する形（ゆるく吸収）
+      const ai = j.invoice || j.ai || j.data || {};
+      const nextDraft = { ...draft };
 
-      // items 反映
-      const aiItems: DraftItem[] = (ai.items ?? []).slice(0, 80).map((it) => {
-        const qty = safeNumber(it.qty) || 1;
-        const unitPrice = safeNumber(it.unitPrice);
-        const taxRate = [10, 8, 0].includes(Number(it.taxRate)) ? Number(it.taxRate) : 10; // デフォ10%
-        const amount = Math.floor(qty * unitPrice);
+      if (ai.clientId) nextDraft.clientId = String(ai.clientId);
+      if (ai.issuerId) nextDraft.issuerId = String(ai.issuerId);
+      if (ai.subject) nextDraft.subject = String(ai.subject).slice(0, 70);
+      if (ai.issueDate) nextDraft.issueDate = String(ai.issueDate);
+      if (ai.dueDate) nextDraft.dueDate = String(ai.dueDate);
+      if (ai.invoiceNo) nextDraft.invoiceNo = String(ai.invoiceNo);
+
+      const aiItemsRaw = Array.isArray(ai.items) ? ai.items : [];
+      const aiItems: InvoiceItem[] = aiItemsRaw.map((it: any) => {
+        const qty = n(it.qty ?? 1);
+        const unitPrice = n(it.unitPrice ?? it.price ?? 0);
+        const taxRate = (n(it.taxRate ?? nextDraft.taxDefault ?? 10) as TaxRate) || 10;
+        const amount = calcAmount(qty, unitPrice);
         return {
-          id: crypto.randomUUID(),
+          id: uid(),
           code: String(it.code ?? ""),
-          name: String(it.name ?? ""),
+          name: String(it.name ?? it.title ?? ""),
           qty,
           unit: String(it.unit ?? ""),
           unitPrice,
@@ -426,441 +412,604 @@ export default function DraftEditPage() {
         };
       });
 
-      const mergedItems =
-        mode === "append" ? [...draft.items, ...aiItems].slice(0, 80) : aiItems;
-
-      const nextDraft: Draft = {
-        ...draft,
-        clientId: nextClientId,
-        subject: String(ai.subject ?? draft.subject).slice(0, 70),
-        issueDate: String(ai.issueDate ?? draft.issueDate),
-        dueDate: ai.dueDate ?? draft.dueDate,
-        notes: ai.notes ? [draft.notes, ai.notes].filter(Boolean).join("\n") : draft.notes,
-        items: mergedItems,
-      };
-
-      // 合計再計算して stateへ → 即保存
-      const t = calcTotals(nextDraft.items);
-      const finalDraft = { ...nextDraft, ...t };
-      setDraft(finalDraft);
-      await saveDraft(finalDraft, false);
-
-      // 取引先が見つからなかった場合の注意
-      if (aiClientKey && !nextClientId) {
-        setMsg(`AIが取引先「${ai.clientName}」を抽出したが、マスタに未登録。右上の取引先から選択 or +登録してくれ。`);
+      if (mode === "header") {
+        nextDraft.items = ensureMinItems(aiItems);
       } else {
-        setMsg("AI反映→保存 完了");
+        // detail: 既存に追記（空行の先頭を埋める戦略）
+        const merged = nextDraft.items.slice();
+
+        // まず空行を埋める
+        let aiIdx = 0;
+        for (let i = 0; i < merged.length && aiIdx < aiItems.length; i++) {
+          const r = merged[i];
+          const isEmpty = !r.name && !r.code && n(r.unitPrice) === 0;
+          if (isEmpty) {
+            merged[i] = { ...aiItems[aiIdx], id: r.id }; // 既存行ID保持
+            aiIdx++;
+          }
+        }
+        // 残りは末尾追加（最大80）
+        while (aiIdx < aiItems.length && merged.length < 80) {
+          merged.push(aiItems[aiIdx++]);
+        }
+        nextDraft.items = ensureMinItems(merged);
       }
+
+      const totals = calcTotals(nextDraft.items);
+      nextDraft.subTotal = totals.subTotal;
+      nextDraft.taxTotal = totals.taxTotal;
+      nextDraft.grandTotal = totals.grandTotal;
+
+      setDraft(nextDraft);
+      setMsg("AI反映OK");
     } catch (e: any) {
-      setMsg("AI反映失敗: " + (e.message ?? e));
-    } finally {
-      setAiLoading(false);
+      setErr(e?.message ?? String(e));
     }
   }
 
-  // UI style（そのまま）
-  const S = {
-    page: { background: "#f5f7fb", minHeight: "100vh", padding: "18px 12px", color: "#0f172a" } as const,
-    container: { maxWidth: 1180, margin: "0 auto" } as const,
-    topBar: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 } as const,
-    title: { fontSize: 20, fontWeight: 800, margin: 0, letterSpacing: 0.2 } as const,
-    sub: { fontSize: 12, color: "#64748b", marginTop: 2 } as const,
-    msg: { margin: "10px 0", padding: "10px 12px", borderRadius: 10, background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412", fontSize: 13 } as const,
-    card: { background: "#fff", borderRadius: 14, border: "1px solid #e2e8f0", boxShadow: "0 1px 0 rgba(15, 23, 42, 0.04)", overflow: "hidden" } as const,
-    cardHead: (accent: string) => ({ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 12px", borderBottom: "1px solid #e2e8f0", borderLeft: `4px solid ${accent}` } as const),
-    cardTitle: { fontSize: 14, fontWeight: 800, margin: 0 } as const,
-    cardBody: { padding: 12 } as const,
-    pill: { fontSize: 12, padding: "4px 8px", borderRadius: 999, background: "#f1f5f9", border: "1px solid #e2e8f0", color: "#334155" } as const,
-    label: { display: "block", fontSize: 12, color: "#475569", marginBottom: 6, fontWeight: 700 } as const,
-    input: { width: "100%", height: 36, padding: "0 10px", borderRadius: 10, border: "1px solid #cbd5e1", outline: "none", background: "#fff" } as const,
-    textarea: { width: "100%", minHeight: 140, padding: 10, borderRadius: 12, border: "1px solid #cbd5e1", outline: "none", background: "#fff", lineHeight: 1.45 } as const,
-    row2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } as const,
-    row3: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 } as const,
-    btn: (kind: "primary" | "ghost" | "danger") =>
-      ({
-        height: 36,
-        padding: "0 12px",
-        borderRadius: 10,
-        border:
-          kind === "primary"
-            ? "1px solid #0f766e"
-            : kind === "danger"
-            ? "1px solid #dc2626"
-            : "1px solid #cbd5e1",
-        background:
-          kind === "primary"
-            ? "#0f766e"
-            : kind === "danger"
-            ? "#dc2626"
-            : "#fff",
-        color: kind === "primary" || kind === "danger" ? "#fff" : "#0f172a",
-        fontWeight: 800,
-        cursor: "pointer",
-        whiteSpace: "nowrap",
-        opacity: aiLoading && (kind === "primary" || kind === "danger") ? 0.6 : 1,
-      } as const),
-    tableWrap: { overflowX: "auto" as const, border: "1px solid #e2e8f0", borderRadius: 12 },
-    table: { width: "100%", borderCollapse: "collapse" as const, background: "#fff", minWidth: 900 } as const,
-    th: { textAlign: "left" as const, fontSize: 12, color: "#334155", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", padding: "10px 8px", whiteSpace: "nowrap" as const } as const,
-    td: { borderBottom: "1px solid #eef2f7", padding: "8px", verticalAlign: "top" as const } as const,
-    mini: { height: 32, borderRadius: 10, border: "1px solid #cbd5e1", padding: "0 8px", outline: "none", width: "100%" } as const,
-    rightTotals: { display: "grid", gridTemplateColumns: "120px 1fr", gap: 8, alignItems: "center", fontSize: 13 } as const,
-    bigTotal: { fontSize: 18, fontWeight: 900 } as const,
-    hint: { fontSize: 12, color: "#64748b", marginTop: 6 } as const,
-  };
+  function clearInstruction() {
+    setDraft((p) => ({ ...p, instructionText: "" }));
+  }
 
+  async function handleDownloadPdf() {
+    try {
+      setOutMsg("");
+      setIsDownloading(true);
+      const token = await getIdToken();
+
+      const res = await fetch(`/api/drafts/${draftId}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(t || `download failed: ${res.status}`);
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `invoice_${draft.invoiceNo || draftId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      URL.revokeObjectURL(url);
+      setOutMsg("PDFをダウンロードした");
+    } catch (e: any) {
+      setOutMsg(`ダウンロード失敗: ${e?.message ?? String(e)}`);
+    } finally {
+      setIsDownloading(false);
+    }
+  }
+
+  async function handleSendMail() {
+    try {
+      setOutMsg("");
+      if (!mailTo) {
+        setOutMsg("送信先メールを選択して");
+        return;
+      }
+      setIsSending(true);
+
+      const token = await getIdToken();
+      const res = await fetch(`/api/drafts/${draftId}/send`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ toEmail: mailTo }),
+      });
+
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.ok) {
+        throw new Error(j?.error || `send failed: ${res.status}`);
+      }
+      setOutMsg(`送信した: ${mailTo}`);
+    } catch (e: any) {
+      setOutMsg(`送信失敗: ${e?.message ?? String(e)}`);
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  // ========= UI =========
   if (loading) {
     return (
-      <div className="pagePad" style={S.page}>
-        <div style={S.container}>
-          <h1 style={S.title}>請求書 下書き</h1>
-          <p style={S.sub}>読み込み中…</p>
+      <div className="page">
+        <div className="container">
+          <div className="topBar">
+            <div>
+              <h1>請求書 下書き</h1>
+              <div className="sub">下書きID: {draftId}</div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="cardBody">読み込み中…</div>
+          </div>
         </div>
       </div>
     );
   }
 
+  const itemCountLabel = `${draft.items.filter((x) => x.name || x.code || x.unitPrice).length}/${draft.items.length}`;
+
   return (
-    <div className="pagePad" style={S.page}>
-      <div style={S.container}>
-        <div style={S.topBar}>
+    <div className="page">
+      <div className="container">
+        {/* header */}
+        <div className="topBar">
           <div>
-            <h1 style={S.title}>請求書 下書き</h1>
-            <div style={S.sub}>下書きID: {draftId}</div>
+            <h1>請求書 下書き</h1>
+            <div className="sub">下書きID: {draftId}</div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <span style={S.pill}>税区分デフォルト: 10%</span>
-            <button type="button" style={S.btn("primary")} onClick={() => saveDraft({ ...draft, ...totals }, false)}>
-              保存(API経由)
+
+          <div className="topActions">
+            <div className="pill">税区分デフォルト: {draft.taxDefault}%</div>
+            <button className="btn" onClick={saveDraft} disabled={saving} type="button">
+              {saving ? "保存中…" : "保存(API経由)"}
             </button>
           </div>
         </div>
 
-        {msg && <div style={S.msg}>{msg}</div>}
+        {msg ? <div className="toast ok">{msg}</div> : null}
+        {err ? <div className="toast err">{err}</div> : null}
 
-        {/* 指示文（AI） */}
-        <div style={{ ...S.card, marginBottom: 12 }}>
-          <div style={S.cardHead("#2563eb")}>
+        {/* instruction */}
+        <section className="card">
+          <div className="cardHead">
             <div>
-              <p style={S.cardTitle}>指示文（AI自動記載用）</p>
-              <div style={{ fontSize: 12, color: "#64748b" }}>
-                貼り付け → 「AIで反映」 → フォームに埋める（明細デフォ税率10%）
-              </div>
+              <h3>指示文（AI自動記載用）</h3>
+              <div className="sub2">貼り付け → 「AIで反映」→ フォームに埋める（明細デフォ税率{draft.taxDefault}%）</div>
             </div>
-            <span style={S.pill}>{aiLoading ? "解析中…" : "準備OK"}</span>
+            <div className="rightBadge">準備OK</div>
           </div>
 
-          <div style={S.cardBody}>
+          <div className="cardBody">
             <textarea
-              style={S.textarea}
-              value={draft.rawInstruction}
-              onChange={(e) => markDirty({ ...draft, rawInstruction: e.target.value })}
-              placeholder="例：いつものマインド社です…（タイトル/内訳/日付/支払い日 など）"
+              className="textarea"
+              value={draft.instructionText}
+              onChange={(e) => setDraft((p) => ({ ...p, instructionText: e.target.value }))}
+              rows={6}
+              placeholder="例：いつものマインド社です。請求書の発行お願いします！…"
             />
 
-            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-              <button
-                type="button"
-                style={S.btn("primary")}
-                disabled={aiLoading}
-                onClick={() => applyAiToForm("replace")}
-              >
+            <div className="btnRow">
+              <button className="btn" onClick={() => applyAi("header")} type="button">
                 AIで反映（上書き）
               </button>
-
-              <button
-                type="button"
-                style={S.btn("ghost")}
-                disabled={aiLoading}
-                onClick={() => applyAiToForm("append")}
-              >
+              <button className="btnOutline" onClick={() => applyAi("detail")} type="button">
                 AIで反映（明細追記）
               </button>
-
-              <button
-                type="button"
-                style={S.btn("danger")}
-                disabled={aiLoading}
-                onClick={() => {
-                  if (!confirm("指示文をクリアする？")) return;
-                  markDirty({ ...draft, rawInstruction: "" });
-                }}
-              >
+              <button className="btnDanger" onClick={clearInstruction} type="button">
                 指示文クリア
               </button>
-
-              <span style={{ ...S.hint, alignSelf: "center" }}>
-                ※取引先が未登録なら「+登録」で追加して選択する
-              </span>
+              <div className="hint">※取引先が未登録なら「＋登録」で追加して選択する</div>
             </div>
           </div>
-        </div>
+        </section>
 
-        {/* レスポンシブ対応グリッド */}
-        <div className="invoiceGrid" style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 12 }}>
-          {/* 左 */}
-          <div className="leftCol" style={{ display: "grid", gap: 12 }}>
-            {/* 請求情報 */}
-            <div style={S.card}>
-              <div style={S.cardHead("#0f766e")}>
-                <p style={S.cardTitle}>請求情報</p>
-                <span style={S.pill}>必須あり</span>
+        {/* main grid */}
+        <div className="grid">
+          {/* left */}
+          <div className="leftCol">
+            {/* invoice info */}
+            <section className="card">
+              <div className="cardHead">
+                <h3>請求情報</h3>
+                <div className="rightBadge">必須あり</div>
               </div>
-              <div style={S.cardBody}>
-                <div style={S.row2}>
-                  <div>
-                    <label style={S.label}>取引先（必須）</label>
-                    <div style={{ display: "flex", gap: 8 }}>
+
+              <div className="cardBody">
+                <div className="formGrid">
+                  <div className="field">
+                    <label>取引先（必須）</label>
+                    <div className="row">
                       <select
-                        style={S.input}
-                        value={draft.clientId ?? ""}
-                        onChange={(e) => markDirty({ ...draft, clientId: e.target.value || null })}
+                        className="input"
+                        value={draft.clientId}
+                        onChange={(e) => setDraft((p) => ({ ...p, clientId: e.target.value }))}
                       >
-                        <option value="">選択…</option>
+                        <option value="">選択</option>
                         {clients.map((c) => (
                           <option key={c.id} value={c.id}>
                             {c.name}
                           </option>
                         ))}
                       </select>
-                      <button type="button" style={S.btn("ghost")} onClick={addClient}>
-                        +登録
+                      <button
+                        className="miniBtn"
+                        type="button"
+                        onClick={() => router.push("/drafts/new")}
+                        title="登録UIは別途。いったん遷移先は仮。"
+                      >
+                        ＋登録
                       </button>
                     </div>
                   </div>
 
-                  <div>
-                    <label style={S.label}>件名（最大70文字）</label>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div className="field">
+                    <label>件名（最大70文字）</label>
+                    <div className="row">
                       <input
-                        style={S.input}
+                        className="input"
                         value={draft.subject}
-                        maxLength={70}
-                        onChange={(e) => markDirty({ ...draft, subject: e.target.value })}
+                        onChange={(e) => setDraft((p) => ({ ...p, subject: e.target.value.slice(0, 70) }))}
+                        placeholder="例）9〜11月分 業務委託費用 一式"
                       />
-                      <span style={S.pill}>{draft.subject.length}/70</span>
+                      <div className="counter">{draft.subject.length}/70</div>
                     </div>
                   </div>
-                </div>
 
-                <div style={{ height: 10 }} />
-
-                <div style={S.row3}>
-                  <div>
-                    <label style={S.label}>請求日（必須）</label>
+                  <div className="field">
+                    <label>請求日（必須）</label>
                     <input
-                      style={S.input}
+                      className="input"
                       type="date"
                       value={draft.issueDate}
-                      onChange={(e) => markDirty({ ...draft, issueDate: e.target.value })}
+                      onChange={(e) => setDraft((p) => ({ ...p, issueDate: e.target.value }))}
                     />
                   </div>
-                  <div>
-                    <label style={S.label}>お支払い期限</label>
+
+                  <div className="field">
+                    <label>お支払い期限</label>
                     <input
-                      style={S.input}
+                      className="input"
                       type="date"
-                      value={draft.dueDate ?? ""}
-                      onChange={(e) => markDirty({ ...draft, dueDate: e.target.value || null })}
+                      value={draft.dueDate}
+                      onChange={(e) => setDraft((p) => ({ ...p, dueDate: e.target.value }))}
                     />
                   </div>
-                  <div>
-                    <label style={S.label}>請求書番号（必須）</label>
-                    <div style={{ display: "flex", gap: 8 }}>
+
+                  <div className="field">
+                    <label>請求書番号（必須）</label>
+                    <div className="row">
                       <input
-                        style={S.input}
+                        className="input"
                         value={draft.invoiceNo}
-                        onChange={(e) => markDirty({ ...draft, invoiceNo: e.target.value })}
+                        onChange={(e) => setDraft((p) => ({ ...p, invoiceNo: e.target.value }))}
+                        placeholder="例）20260227-001"
                       />
-                      <button type="button" style={S.btn("ghost")} onClick={generateInvoiceNo}>
+                      <button
+                        className="miniBtn"
+                        type="button"
+                        onClick={async () => {
+                          setErr("");
+                          setMsg("");
+                          try {
+                            const token = await getIdToken();
+                            const res = await fetch("/api/invoices/next-number", {
+                              headers: { Authorization: `Bearer ${token}` },
+                              cache: "no-store",
+                            });
+                            const j = await res.json().catch(() => ({}));
+                            if (!res.ok || !j?.ok) throw new Error(j?.error || "採番失敗");
+                            setDraft((p) => ({ ...p, invoiceNo: String(j.invoiceNo || "") }));
+                            setMsg("採番した");
+                          } catch (e: any) {
+                            setErr(e?.message ?? String(e));
+                          }
+                        }}
+                      >
                         採番
                       </button>
                     </div>
                   </div>
                 </div>
               </div>
-            </div>
+            </section>
 
-            {/* 明細 */}
-            <div style={S.card}>
-              <div style={S.cardHead("#0ea5a4")}>
-                <p style={S.cardTitle}>明細（最大80行 / 税率デフォ10%）</p>
-                <span style={S.pill}>{draft.items.length}/80</span>
+            {/* items */}
+            <section className="card">
+              <div className="cardHead">
+                <h3>明細（最大80行 / 税率デフォ{draft.taxDefault}%）</h3>
+                <div className="rightBadge">{itemCountLabel}</div>
               </div>
-              <div style={S.cardBody}>
-                <div style={S.tableWrap}>
-                  <table style={S.table}>
+
+              <div className="cardBody">
+                <div className="tableWrap">
+                  <table className="table">
                     <thead>
                       <tr>
-                        <th style={S.th}>品番</th>
-                        <th style={S.th}>品名</th>
-                        <th style={S.th}>数量</th>
-                        <th style={S.th}>単位</th>
-                        <th style={S.th}>単価</th>
-                        <th style={S.th}>税区分</th>
-                        <th style={S.th}>小計</th>
-                        <th style={S.th}></th>
+                        <th style={{ minWidth: 110 }}>品番</th>
+                        <th style={{ minWidth: 220 }}>品名</th>
+                        <th style={{ width: 90 }}>数量</th>
+                        <th style={{ width: 110 }}>単位</th>
+                        <th style={{ width: 120 }}>単価</th>
+                        <th style={{ width: 100 }}>税区分</th>
+                        <th style={{ width: 130, textAlign: "right" }}>小計</th>
+                        <th style={{ width: 70 }}></th>
                       </tr>
                     </thead>
                     <tbody>
                       {draft.items.map((it, idx) => (
                         <tr key={it.id}>
-                          <td style={S.td}>
-                            <input style={S.mini} value={it.code} onChange={(e) => updateItem(idx, { code: e.target.value })} />
+                          <td>
+                            <input
+                              className="input"
+                              value={it.code}
+                              onChange={(e) => updateItem(idx, { code: e.target.value })}
+                              placeholder=""
+                            />
                           </td>
-                          <td style={S.td}>
-                            <input style={S.mini} value={it.name} onChange={(e) => updateItem(idx, { name: e.target.value })} />
+                          <td>
+                            <input
+                              className="input"
+                              value={it.name}
+                              onChange={(e) => updateItem(idx, { name: e.target.value })}
+                              placeholder="例）業務委託費用 一式"
+                            />
                           </td>
-                          <td style={S.td}>
-                            <input style={S.mini} type="number" value={it.qty} onChange={(e) => updateItem(idx, { qty: safeNumber(e.target.value) })} />
+                          <td>
+                            <input
+                              className="input"
+                              type="number"
+                              value={it.qty}
+                              min={0}
+                              step={1}
+                              onChange={(e) => updateItem(idx, { qty: n(e.target.value) })}
+                            />
                           </td>
-                          <td style={S.td}>
-                            <input style={S.mini} value={it.unit} onChange={(e) => updateItem(idx, { unit: e.target.value })} />
+                          <td>
+                            <input
+                              className="input"
+                              value={it.unit}
+                              onChange={(e) => updateItem(idx, { unit: e.target.value })}
+                              placeholder=""
+                            />
                           </td>
-                          <td style={S.td}>
-                            <input style={S.mini} type="number" value={it.unitPrice} onChange={(e) => updateItem(idx, { unitPrice: safeNumber(e.target.value) })} />
+                          <td>
+                            <input
+                              className="input"
+                              type="number"
+                              value={it.unitPrice}
+                              min={0}
+                              step={1}
+                              onChange={(e) => updateItem(idx, { unitPrice: n(e.target.value) })}
+                            />
                           </td>
-                          <td style={S.td}>
-                            <select style={S.mini} value={it.taxRate} onChange={(e) => updateItem(idx, { taxRate: safeNumber(e.target.value) })}>
+                          <td>
+                            <select
+                              className="input"
+                              value={it.taxRate}
+                              onChange={(e) => updateItem(idx, { taxRate: n(e.target.value) as TaxRate })}
+                            >
                               <option value={10}>10%</option>
                               <option value={8}>8%</option>
                               <option value={0}>0%</option>
                             </select>
                           </td>
-                          <td style={{ ...S.td, whiteSpace: "nowrap" }}><b>{it.amount.toLocaleString()}円</b></td>
-                          <td style={S.td}>
-                            <button type="button" style={S.btn("ghost")} onClick={() => removeItemRow(idx)}>
+                          <td style={{ textAlign: "right", fontWeight: 700 }}>
+                            {formatYen(it.amount)}
+                          </td>
+                          <td style={{ textAlign: "right" }}>
+                            <button className="miniBtnDanger" type="button" onClick={() => removeRow(idx)}>
                               削除
                             </button>
                           </td>
                         </tr>
                       ))}
-                      {draft.items.length === 0 && (
-                        <tr>
-                          <td colSpan={8} style={{ padding: 12, color: "#64748b" }}>
-                            明細がありません。「+ 行追加」で追加。
-                          </td>
-                        </tr>
-                      )}
                     </tbody>
                   </table>
                 </div>
 
-                <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
-                  <button type="button" style={S.btn("primary")} onClick={addItemRow}>
-                    + 行追加
+                <div className="btnRow">
+                  <button className="btnOutline" onClick={addRow} type="button">
+                    ＋ 行追加
                   </button>
                 </div>
               </div>
-            </div>
+            </section>
 
-            {/* 備考 */}
-            <div style={S.card}>
-              <div style={S.cardHead("#f59e0b")}>
-                <p style={S.cardTitle}>備考</p>
-                <span style={S.pill}>自由記載</span>
+            {/* note */}
+            <section className="card">
+              <div className="cardHead">
+                <h3>備考</h3>
+                <div className="rightBadge">自由記載</div>
               </div>
-              <div style={S.cardBody}>
-                <textarea style={{ ...S.textarea, minHeight: 100 }} value={draft.notes} onChange={(e) => markDirty({ ...draft, notes: e.target.value })} />
+              <div className="cardBody">
+                <textarea
+                  className="textarea"
+                  rows={4}
+                  value={draft.note}
+                  onChange={(e) => setDraft((p) => ({ ...p, note: e.target.value }))}
+                  placeholder="例）お振込手数料はご負担ください。"
+                />
               </div>
-            </div>
+            </section>
+
+            <div className="footHint">スマホは右側カードが下に回る（レスポンシブ対応）</div>
           </div>
 
-          {/* 右（スマホは下へ） */}
-          <div className="rightCol" style={{ display: "grid", gap: 12, alignSelf: "start" }}>
-            <div style={S.card}>
-              <div style={S.cardHead("#6366f1")}>
-                <p style={S.cardTitle}>請求元情報</p>
-                <span style={S.pill}>必須</span>
+          {/* right */}
+          <div className="rightCol">
+            {/* issuer */}
+            <section className="card">
+              <div className="cardHead">
+                <h3>請求元情報</h3>
+                <div className="rightBadge">必須</div>
               </div>
-              <div style={S.cardBody}>
-                <label style={S.label}>自社名（必須）</label>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <select style={S.input} value={draft.issuerId ?? ""} onChange={(e) => markDirty({ ...draft, issuerId: e.target.value || null })}>
-                    <option value="">選択…</option>
-                    {issuers.map((i) => (
-                      <option key={i.id} value={i.id}>
-                        {i.name}
+
+              <div className="cardBody">
+                <div className="field">
+                  <label>自社名（必須）</label>
+                  <div className="row">
+                    <select
+                      className="input"
+                      value={draft.issuerId}
+                      onChange={(e) => setDraft((p) => ({ ...p, issuerId: e.target.value }))}
+                    >
+                      <option value="">選択</option>
+                      {issuers.map((x) => (
+                        <option key={x.id} value={x.id}>
+                          {x.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button className="miniBtn" type="button" onClick={() => router.push("/drafts/new")}>
+                      ＋登録
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* totals */}
+            <section className="card">
+              <div className="cardHead">
+                <h3>金額（自動計算）</h3>
+                <div className="rightBadge">リアルタイム</div>
+              </div>
+
+              <div className="cardBody">
+                <div className="totals">
+                  <div className="totRow">
+                    <div>小計</div>
+                    <div className="money">{formatYen(draft.subTotal)}</div>
+                  </div>
+                  <div className="totRow">
+                    <div>消費税</div>
+                    <div className="money">{formatYen(draft.taxTotal)}</div>
+                  </div>
+                  <div className="totRow total">
+                    <div>合計</div>
+                    <div className="money">{formatYen(draft.grandTotal)}</div>
+                  </div>
+                </div>
+
+                <div className="field" style={{ marginTop: 12 }}>
+                  <label>税区分デフォルト</label>
+                  <select
+                    className="input"
+                    value={draft.taxDefault}
+                    onChange={(e) => {
+                      const taxDefault = n(e.target.value) as TaxRate;
+                      setDraft((p) => {
+                        const items = p.items.map((it) => ({
+                          ...it,
+                          taxRate: (it.taxRate ?? taxDefault) as TaxRate,
+                        }));
+                        const totals = calcTotals(items);
+                        return { ...p, taxDefault, items, ...totals };
+                      });
+                    }}
+                  >
+                    <option value={10}>10%</option>
+                    <option value={8}>8%</option>
+                    <option value={0}>0%</option>
+                  </select>
+                  <div className="hint2">デフォは10%。あとから行ごとに変更可</div>
+                </div>
+              </div>
+            </section>
+
+            {/* bank accounts */}
+            <section className="card">
+              <div className="cardHead">
+                <h3>振込先（最大10件）</h3>
+                <div className="rightBadge">{draft.bankAccountIds.length}/10</div>
+              </div>
+
+              <div className="cardBody">
+                <div className="btnRow" style={{ marginBottom: 10 }}>
+                  <button className="miniBtn" type="button" onClick={() => router.push("/drafts/new")}>
+                    ＋登録
+                  </button>
+                </div>
+
+                <div className="bankList">
+                  {banks.length === 0 ? (
+                    <div className="hint2">振込先が未登録</div>
+                  ) : (
+                    banks.map((b) => {
+                      const checked = draft.bankAccountIds.includes(b.id);
+                      const label = `${b.bankName} ${b.branchName} ${b.accountType} ${b.accountNumber} ${b.accountName}`;
+                      return (
+                        <label key={b.id} className="checkRow">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              const on = e.target.checked;
+                              setDraft((p) => {
+                                const ids = p.bankAccountIds.slice();
+                                if (on) {
+                                  if (ids.length >= 10) return p;
+                                  if (!ids.includes(b.id)) ids.push(b.id);
+                                } else {
+                                  const i = ids.indexOf(b.id);
+                                  if (i >= 0) ids.splice(i, 1);
+                                }
+                                return { ...p, bankAccountIds: ids };
+                              });
+                            }}
+                          />
+                          <span title={label}>{label}</span>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+
+                {selectedBankText ? <div className="hint2">先頭の口座をPDFに表示：{selectedBankText}</div> : null}
+              </div>
+            </section>
+
+            {/* ✅ Output card (RIGHT COLUMN) */}
+            <section className="card">
+              <div className="cardHead">
+                <h3>出力（PDF）</h3>
+              </div>
+
+              <div className="cardBody" style={{ display: "grid", gap: 10 }}>
+                <button className="btn" onClick={handleDownloadPdf} disabled={isDownloading} type="button">
+                  {isDownloading ? "生成中…" : "PDFをダウンロード"}
+                </button>
+
+                <div style={{ display: "grid", gap: 6 }}>
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>メール送信</div>
+
+                  <select value={mailTo} onChange={(e) => setMailTo(e.target.value)} className="input">
+                    <option value="">送信先を選択</option>
+                    {recipients.map((r) => (
+                      <option key={r.id} value={r.email}>
+                        {r.label ? `${r.label} <${r.email}>` : r.email}
                       </option>
                     ))}
                   </select>
-                  <button type="button" style={S.btn("ghost")} onClick={addIssuer}>
-                    +登録
+
+                  <button
+                    className="btnOutline"
+                    onClick={handleSendMail}
+                    disabled={!mailTo || isSending}
+                    type="button"
+                  >
+                    {isSending ? "送信中…" : "この宛先へ送信"}
                   </button>
+
+                  {outMsg ? (
+                    <div style={{ fontSize: 12, color: outMsg.includes("失敗") ? "#b00020" : "#0a7f3f" }}>
+                      {outMsg}
+                    </div>
+                  ) : null}
                 </div>
               </div>
-            </div>
+            </section>
 
-            <div style={S.card}>
-              <div style={S.cardHead("#0f766e")}>
-                <p style={S.cardTitle}>金額（自動計算）</p>
-                <span style={S.pill}>リアルタイム</span>
-              </div>
-              <div style={S.cardBody}>
-                <div style={S.rightTotals}>
-                  <div style={{ color: "#64748b" }}>小計</div>
-                  <div style={{ fontWeight: 800 }}>{totals.subTotal.toLocaleString()}円</div>
-                  <div style={{ color: "#64748b" }}>消費税</div>
-                  <div style={{ fontWeight: 800 }}>{totals.taxTotal.toLocaleString()}円</div>
-                  <div style={{ color: "#64748b" }}>合計</div>
-                  <div style={S.bigTotal}>{totals.grandTotal.toLocaleString()}円</div>
-                </div>
-              </div>
-            </div>
-
-            <div style={S.card}>
-              <div style={S.cardHead("#0ea5a4")}>
-                <p style={S.cardTitle}>振込先（最大10件）</p>
-                <span style={S.pill}>{draft.bankAccountIds.length}/10</span>
-              </div>
-              <div style={S.cardBody}>
-                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                  <button type="button" style={S.btn("ghost")} onClick={addBank}>
-                    +登録
-                  </button>
-                </div>
-
-                <div style={{ display: "grid", gap: 8 }}>
-                  {banks.map((b) => {
-                    const checked = draft.bankAccountIds.includes(b.id);
-                    const label = `${b.bankName} ${b.branchName} ${b.accountType} ${b.accountNumber} ${b.accountName}`;
-                    return (
-                      <label
-                        key={b.id}
-                        style={{
-                          display: "flex",
-                          gap: 10,
-                          alignItems: "flex-start",
-                          padding: "8px 10px",
-                          border: "1px solid #e2e8f0",
-                          borderRadius: 12,
-                          background: checked ? "#f0fdfa" : "#fff",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <input type="checkbox" checked={checked} onChange={() => toggleBank(b.id)} />
-                        <div style={{ fontSize: 12, color: "#0f172a", lineHeight: 1.35 }}>{label}</div>
-                      </label>
-                    );
-                  })}
-                  {banks.length === 0 && <div style={{ color: "#64748b", fontSize: 12 }}>未登録。上の「+登録」で追加。</div>}
-                </div>
-              </div>
-            </div>
-
-            <div style={S.card}>
-              <div style={S.cardBody}>
-                <button type="button" style={{ ...S.btn("primary"), width: "100%" }} onClick={() => saveDraft({ ...draft, ...totals }, false)}>
-                  保存(API経由)
+            {/* save */}
+            <section className="card">
+              <div className="cardBody">
+                <button className="btn big" onClick={saveDraft} disabled={saving} type="button">
+                  {saving ? "保存中…" : "保存(API経由)"}
                 </button>
-                <div style={{ ...S.hint, marginTop: 8 }}>自動保存：入力後 0.8秒で保存</div>
+                <div className="hint2">自動保存：入力後 0.8秒で保存（※未実装なら後で追加）</div>
               </div>
-            </div>
+            </section>
           </div>
         </div>
-
-        <div style={{ height: 18 }} />
-        <div style={{ fontSize: 12, color: "#64748b" }}>スマホは右側カードが下に回る（レスポンシブ対応）</div>
       </div>
     </div>
   );
