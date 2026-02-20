@@ -1,0 +1,21 @@
+/* app/drafts/[id]/drafts.css */
+
+/* 画面幅が小さいときは右カラムを下に落とす */
+@media (max-width: 900px) {
+  .invoiceGrid {
+    grid-template-columns: 1fr !important;
+  }
+  .rightCol {
+    order: 2; /* 右カラムを下へ */
+  }
+  .leftCol {
+    order: 1;
+  }
+}
+
+/* さらに小さい端末でテーブルが横スクロールしやすいように */
+@media (max-width: 520px) {
+  .pagePad {
+    padding: 12px 10px !important;
+  }
+}
