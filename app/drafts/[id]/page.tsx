@@ -46,6 +46,7 @@ type Draft = {
 
 type Client = { id: string; name: string; email?: string };
 type Issuer = { id: string; name: string };
+type Recipient = { id: string; email: string; label?: string };
 type BankAccount = {
   id: string;
   bankName: string;
@@ -71,6 +72,10 @@ function formatYen(v: number) {
 
 function calcAmount(qty: number, unitPrice: number) {
   return Math.round(n(qty) * n(unitPrice));
+}
+
+function looksLikeEmail(v: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
 function calcTotals(items: InvoiceItem[]) {
@@ -118,9 +123,7 @@ export default function DraftDetailPage() {
 
   // recipients
   const [mailTo, setMailTo] = useState("");
-  const [recipients, setRecipients] = useState<Array<{ id: string; email: string; label?: string }>>(
-    []
-  );
+  const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [outMsg, setOutMsg] = useState<string>("");
@@ -167,7 +170,7 @@ export default function DraftDetailPage() {
       try {
         const token = await getIdToken();
 
-        const [dRes, cRes, iRes, bRes] = await Promise.all([
+        const [dRes, cRes, iRes, bRes, rRes] = await Promise.all([
           fetch(`/api/drafts/${draftId}`, {
             headers: { Authorization: `Bearer ${token}` },
             cache: "no-store",
@@ -184,6 +187,10 @@ export default function DraftDetailPage() {
             headers: { Authorization: `Bearer ${token}` },
             cache: "no-store",
           }),
+          fetch(`/api/recipients`, {
+            headers: { Authorization: `Bearer ${token}` },
+            cache: "no-store",
+          }),
         ]);
 
         const dj = await dRes.json();
@@ -192,6 +199,7 @@ export default function DraftDetailPage() {
         const cj = await cRes.json().catch(() => ({}));
         const ij = await iRes.json().catch(() => ({}));
         const bj = await bRes.json().catch(() => ({}));
+        const rj = await rRes.json().catch(() => ({}));
 
         const loaded: Draft = {
           ...draft,
@@ -247,16 +255,35 @@ export default function DraftDetailPage() {
         setIssuers(issuerList);
         setBanks(bankList);
 
-        // recipients
-        const r = clientList
+        // recipients: client.email と recipients master をマージ
+        const fromClients: Recipient[] = clientList
           .filter((c) => !!c.email)
           .map((c) => ({
             id: c.id,
             email: c.email!,
             label: c.name || c.email!,
           }));
-        setRecipients(r);
-        if (!mailTo && r[0]?.email) setMailTo(r[0].email);
+        const fromMaster: Recipient[] = Array.isArray(rj?.recipients)
+          ? rj.recipients.map((x: any) => ({
+              id: String(x.id ?? ""),
+              email: String(x.email ?? ""),
+              label: x.label ? String(x.label) : undefined,
+            }))
+          : [];
+        const map = new Map<string, Recipient>();
+        for (const r of [...fromMaster, ...fromClients]) {
+          const email = String(r.email || "").trim().toLowerCase();
+          if (!email) continue;
+          const prev = map.get(email);
+          map.set(email, {
+            id: r.id || prev?.id || email,
+            email,
+            label: r.label || prev?.label || email,
+          });
+        }
+        const mergedRecipients = Array.from(map.values());
+        setRecipients(mergedRecipients);
+        if (!mailTo && mergedRecipients[0]?.email) setMailTo(mergedRecipients[0].email);
       } catch (e: any) {
         setErr(e?.message ?? String(e));
       } finally {
@@ -381,6 +408,105 @@ export default function DraftDetailPage() {
 
   async function saveDraft() {
     await persistDraft();
+  }
+
+  async function handleAddClient() {
+    try {
+      const name = window.prompt("取引先名を入力してください");
+      if (!name || !name.trim()) return;
+      const email = (window.prompt("送信用メールアドレス（任意）") || "").trim();
+      if (email && !looksLikeEmail(email)) {
+        setErr("メールアドレス形式が不正です");
+        return;
+      }
+
+      const token = await getIdToken();
+      const res = await fetch("/api/clients", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ name: name.trim(), email }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.ok) throw new Error(j?.error || `client add failed: ${res.status}`);
+
+      const created: Client = { id: String(j.id), name: name.trim(), email: email || undefined };
+      setClients((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name, "ja")));
+      setDraft((p) => ({ ...p, clientId: created.id }));
+      if (email) {
+        setRecipients((prev) => {
+          if (prev.some((r) => r.email === email.toLowerCase())) return prev;
+          return [...prev, { id: `client-${created.id}`, email: email.toLowerCase(), label: created.name }];
+        });
+      }
+      setMsg(`取引先を登録した: ${created.name}`);
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    }
+  }
+
+  async function handleAddIssuer() {
+    try {
+      const name = window.prompt("請求元名を入力してください");
+      if (!name || !name.trim()) return;
+
+      const token = await getIdToken();
+      const res = await fetch("/api/issuers", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.ok) throw new Error(j?.error || `issuer add failed: ${res.status}`);
+
+      const created: Issuer = { id: String(j.id), name: name.trim() };
+      setIssuers((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name, "ja")));
+      setDraft((p) => ({ ...p, issuerId: created.id }));
+      setMsg(`請求元を登録した: ${created.name}`);
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    }
+  }
+
+  async function handleAddRecipient() {
+    try {
+      const emailInput = window.prompt("送信先メールアドレスを入力してください");
+      const email = String(emailInput ?? "").trim().toLowerCase();
+      if (!email) return;
+      if (!looksLikeEmail(email)) {
+        setOutMsg("メールアドレス形式が不正です");
+        return;
+      }
+      const label = (window.prompt("表示名（任意）", "") || "").trim();
+
+      const token = await getIdToken();
+      const res = await fetch("/api/recipients", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ email, label }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.ok) throw new Error(j?.error || `recipient add failed: ${res.status}`);
+
+      const id = String(j.id ?? `rec-${email}`);
+      setRecipients((prev) => {
+        const exists = prev.some((r) => r.email === email);
+        if (exists) return prev;
+        return [...prev, { id, email, label: label || email }];
+      });
+      setMailTo(email);
+      setOutMsg(`送信先を登録した: ${email}`);
+    } catch (e: any) {
+      setOutMsg(`送信先登録失敗: ${e?.message ?? String(e)}`);
+    }
   }
 
   async function applyAi(mode: "header" | "detail") {
@@ -686,7 +812,7 @@ export default function DraftDetailPage() {
                           </option>
                         ))}
                       </select>
-                      <button className="miniBtn" type="button" onClick={() => router.push("/drafts/new")}>
+                      <button className="miniBtn" type="button" onClick={handleAddClient}>
                         ＋登録
                       </button>
                     </div>
@@ -885,7 +1011,7 @@ export default function DraftDetailPage() {
                         </option>
                       ))}
                     </select>
-                    <button className="miniBtn" type="button" onClick={() => router.push("/drafts/new")}>
+                    <button className="miniBtn" type="button" onClick={handleAddIssuer}>
                       ＋登録
                     </button>
                   </div>
@@ -1016,6 +1142,10 @@ export default function DraftDetailPage() {
                       </option>
                     ))}
                   </select>
+
+                  <button className="miniBtn" onClick={handleAddRecipient} type="button">
+                    ＋送信先登録
+                  </button>
 
                   <button className="btnOutline" onClick={handleSendMail} disabled={!mailTo || isSending} type="button">
                     {isSending ? "送信中…" : "この宛先へ送信"}

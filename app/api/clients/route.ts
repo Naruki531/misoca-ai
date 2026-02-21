@@ -25,10 +25,14 @@ export async function POST(req: Request) {
     const body = await req.json();
     const name = (body?.name ?? "").toString().trim();
     if (!name) return NextResponse.json({ ok: false, error: "name is required" }, { status: 400 });
+    const email = (body?.email ?? "").toString().trim();
+    const memo = (body?.memo ?? "").toString().trim();
 
     const col = adminDb.collection("users").doc(uid).collection("clients");
     const ref = await col.add({
       name,
+      email,
+      memo,
       createdAt: now(),
       updatedAt: now(),
     });
