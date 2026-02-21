@@ -18,17 +18,18 @@ function emptyDraft() {
   return {
     clientId: null,
     issueDate: today,
-    dueDate: null,
+    dueDate: "",
     invoiceNo: "",
     subject: "",
     issuerId: null,
     items: [],
+    taxDefault: 10,
     subTotal: 0,
     taxTotal: 0,
     grandTotal: 0,
-    notes: "",
+    note: "",
     bankAccountIds: [],
-    rawInstruction: "",
+    instructionText: "",
     createdAt: now(),
     updatedAt: now(),
   };
@@ -38,13 +39,18 @@ export async function POST(req: Request) {
   try {
     const { uid } = await verifyBearer(req);
     const body = await req.json().catch(() => ({}));
-    const rawInstruction = typeof body.rawInstruction === "string" ? body.rawInstruction : "";
+    const instructionText =
+      typeof body.instructionText === "string"
+        ? body.instructionText
+        : typeof body.rawInstruction === "string"
+        ? body.rawInstruction
+        : "";
 
     const draftsCol = adminDb.collection("users").doc(uid).collection("drafts");
 
     const ref = await draftsCol.add({
       ...emptyDraft(),
-      rawInstruction,
+      instructionText,
     });
 
     return NextResponse.json({ ok: true, id: ref.id });

@@ -1,0 +1,328 @@
+* {
+  box-sizing: border-box;
+}
+
+.page {
+  min-height: 100vh;
+  background: #f6f8fc;
+  color: #111827;
+}
+
+.container {
+  width: min(1240px, 100%);
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.topBar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.topBar h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.topActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pill {
+  background: #e0f2fe;
+  color: #0c4a6e;
+  border: 1px solid #bae6fd;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toast {
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.toast.ok {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.toast.err {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 12px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.cardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.cardHead h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.cardBody {
+  padding: 14px;
+}
+
+.rightBadge {
+  font-size: 11px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.sub2,
+.hint,
+.hint2,
+.footHint {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.field label {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 5px;
+  color: #374151;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.input,
+.textarea {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.textarea {
+  resize: vertical;
+  min-height: 110px;
+}
+
+.input:focus,
+.textarea:focus {
+  outline: 2px solid #bfdbfe;
+  border-color: #93c5fd;
+}
+
+.counter {
+  min-width: 48px;
+  text-align: right;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.btnRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.btn,
+.btnOutline,
+.btnDanger,
+.miniBtn,
+.miniBtnDanger {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 120ms ease;
+}
+
+.btn:disabled,
+.btnOutline:disabled,
+.btnDanger:disabled,
+.miniBtn:disabled,
+.miniBtnDanger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn {
+  background: #2563eb;
+  color: #fff;
+  border-color: #2563eb;
+  padding: 8px 12px;
+}
+
+.btn:hover {
+  background: #1d4ed8;
+}
+
+.btn.big {
+  width: 100%;
+  padding: 11px 14px;
+}
+
+.btnOutline {
+  background: #fff;
+  color: #1f2937;
+  border-color: #d1d5db;
+  padding: 8px 12px;
+}
+
+.btnOutline:hover {
+  background: #f9fafb;
+}
+
+.btnDanger {
+  background: #fff1f2;
+  color: #be123c;
+  border-color: #fecdd3;
+  padding: 8px 12px;
+}
+
+.miniBtn,
+.miniBtnDanger {
+  padding: 7px 10px;
+  background: #fff;
+  border-color: #d1d5db;
+}
+
+.miniBtnDanger {
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 860px;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid #f3f4f6;
+  padding: 8px 6px;
+  vertical-align: middle;
+  font-size: 13px;
+}
+
+.table th {
+  text-align: left;
+  background: #f9fafb;
+  color: #374151;
+}
+
+.totals {
+  display: grid;
+  gap: 6px;
+}
+
+.totRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+}
+
+.totRow.total {
+  font-size: 16px;
+  font-weight: 700;
+  padding-top: 4px;
+  border-top: 1px dashed #d1d5db;
+}
+
+.money {
+  font-variant-numeric: tabular-nums;
+}
+
+.bankList {
+  display: grid;
+  gap: 6px;
+}
+
+.checkRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+}
+
+@media (max-width: 1080px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .rightCol {
+    order: 2;
+  }
+
+  .leftCol {
+    order: 1;
+  }
+}
+
+@media (max-width: 720px) {
+  .container {
+    padding: 12px;
+  }
+
+  .topBar {
+    flex-direction: column;
+  }
+
+  .formGrid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,9 +1,8 @@
 // app/drafts/[id]/page.tsx
 "use client";
 
-import "./drafts.css";
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useParams } from "next/navigation";
 import { getIdToken } from "@/lib/auth/client";
 
 type TaxRate = 0 | 8 | 10;
@@ -16,28 +15,24 @@ type InvoiceItem = {
   unit: string;
   unitPrice: number;
   taxRate: TaxRate;
-  amount: number; // 自動計算（qty * unitPrice）
+  amount: number; // qty * unitPrice
 };
 
 type Draft = {
   id: string;
   instructionText: string;
 
-  // master refs
   clientId: string;
   issuerId: string;
   bankAccountIds: string[];
 
-  // invoice header
   subject: string;
   issueDate: string; // YYYY-MM-DD
   dueDate: string; // YYYY-MM-DD
   invoiceNo: string;
 
-  // items
   items: InvoiceItem[];
 
-  // totals
   taxDefault: TaxRate;
   subTotal: number;
   taxTotal: number;
@@ -100,9 +95,15 @@ function ensureMinItems(items: InvoiceItem[], min = 3) {
   return [...items, ...add];
 }
 
-export default function DraftDetailPage({ params }: { params: { id: string } }) {
+export default function DraftDetailPage() {
   const router = useRouter();
-  const draftId = params.id;
+  const params = useParams();
+
+  // useParams の id は string | string[] | undefined になり得るので安全に文字列化
+  const draftId = useMemo(() => {
+    const raw = (params as any)?.id as string | string[] | undefined;
+    return Array.isArray(raw) ? raw[0] : raw ?? "";
+  }, [params]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -115,7 +116,7 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
   const [issuers, setIssuers] = useState<Issuer[]>([]);
   const [banks, setBanks] = useState<BankAccount[]>([]);
 
-  // recipients (clientsのemailを候補にする)
+  // recipients
   const [mailTo, setMailTo] = useState("");
   const [recipients, setRecipients] = useState<Array<{ id: string; email: string; label?: string }>>(
     []
@@ -124,9 +125,9 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
   const [isSending, setIsSending] = useState(false);
   const [outMsg, setOutMsg] = useState<string>("");
 
-  // draft form state
+  // draft form state（draftId が入ったら id を追随させる）
   const [draft, setDraft] = useState<Draft>({
-    id: draftId,
+    id: "",
     instructionText: "",
 
     clientId: "",
@@ -148,12 +149,21 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
     note: "",
   });
 
+  // draftId 反映（初期表示で id が空→入るケース対策）
+  useEffect(() => {
+    if (!draftId) return;
+    setDraft((p) => (p.id === draftId ? p : { ...p, id: draftId }));
+  }, [draftId]);
+
   // ========= Load =========
   useEffect(() => {
+    if (!draftId) return;
+
     (async () => {
       setLoading(true);
       setErr("");
       setMsg("");
+
       try {
         const token = await getIdToken();
 
@@ -187,16 +197,22 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
           ...draft,
           ...dj.draft,
           id: draftId,
-          items: ensureMinItems((dj.draft?.items || []).map((it: any) => ({
-            id: String(it.id || uid()),
-            code: String(it.code || ""),
-            name: String(it.name || ""),
-            qty: n(it.qty || 1),
-            unit: String(it.unit || ""),
-            unitPrice: n(it.unitPrice || 0),
-            taxRate: (n(it.taxRate || dj.draft?.taxDefault || 10) as TaxRate) || 10,
-            amount: n(it.amount || calcAmount(it.qty || 1, it.unitPrice || 0)),
-          }))),
+          items: ensureMinItems(
+            (dj.draft?.items || []).map((it: any) => {
+              const qty = n(it.qty ?? 1);
+              const unitPrice = n(it.unitPrice ?? 0);
+              return {
+                id: String(it.id || uid()),
+                code: String(it.code || ""),
+                name: String(it.name || ""),
+                qty,
+                unit: String(it.unit || ""),
+                unitPrice,
+                taxRate: (n(it.taxRate ?? dj.draft?.taxDefault ?? 10) as TaxRate) || 10,
+                amount: n(it.amount ?? calcAmount(qty, unitPrice)),
+              };
+            })
+          ),
           taxDefault: (n(dj.draft?.taxDefault ?? 10) as TaxRate) || 10,
         };
 
@@ -256,9 +272,9 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
     if (!ids.length) return "";
     const b0 = banks.find((b) => b.id === ids[0]);
     if (!b0) return "";
-    return `${b0.bankName} ${b0.branchName}${b0.branchCode ? `(${b0.branchCode})` : ""} ${
-      b0.accountType
-    } ${b0.accountNumber} ${b0.accountName}`;
+    return `${b0.bankName} ${b0.branchName}${b0.branchCode ? `(${b0.branchCode})` : ""} ${b0.accountType} ${
+      b0.accountNumber
+    } ${b0.accountName}`;
   }, [draft.bankAccountIds, banks]);
 
   // ========= Handlers =========
@@ -269,12 +285,10 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
       if (!cur) return prev;
       const next: InvoiceItem = { ...cur, ...patch };
 
-      // amount auto
       const qty = n(next.qty);
       const unitPrice = n(next.unitPrice);
       next.amount = calcAmount(qty, unitPrice);
 
-      // if taxRate empty -> fallback
       if (next.taxRate === (undefined as any) || next.taxRate === null) {
         next.taxRate = prev.taxDefault;
       }
@@ -315,6 +329,7 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
   }
 
   async function saveDraft() {
+    if (!draftId) return;
     setSaving(true);
     setErr("");
     setMsg("");
@@ -361,8 +376,7 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
   }
 
   async function applyAi(mode: "header" | "detail") {
-    // header: 上書き（主に件名/日付/取引先/明細をまるっと）
-    // detail: 明細追記（既存を残して追加）
+    if (!draftId) return;
     setErr("");
     setMsg("");
     try {
@@ -374,27 +388,54 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
-          text: draft.instructionText,
-          mode,
+          instructionText: draft.instructionText,
+          applyMode: mode,
           taxDefault: draft.taxDefault,
+          masters: {
+            clients: clients.map((c) => ({ id: c.id, name: c.name, email: c.email ?? "" })),
+            issuers: issuers.map((i) => ({ id: i.id, name: i.name })),
+            bankAccounts: banks.map((b) => ({
+              id: b.id,
+              label: `${b.bankName} ${b.branchName} ${b.accountType} ${b.accountNumber} ${b.accountName}`,
+              bankName: b.bankName,
+              branchName: b.branchName,
+              accountType: b.accountType,
+              accountNumber: b.accountNumber,
+              accountName: b.accountName,
+            })),
+          },
+          draft: {
+            clientId: draft.clientId,
+            issuerId: draft.issuerId,
+            bankAccountIds: draft.bankAccountIds,
+            subject: draft.subject,
+            issueDate: draft.issueDate,
+            dueDate: draft.dueDate,
+            invoiceNo: draft.invoiceNo,
+            note: draft.note,
+          },
         }),
       });
 
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j?.ok) throw new Error(j?.error || `AI failed: ${res.status}`);
 
-      // 期待する形（ゆるく吸収）
-      const ai = j.invoice || j.ai || j.data || {};
+      const ai = j.data || {};
+      const selected = ai.selected || {};
       const nextDraft = { ...draft };
 
-      if (ai.clientId) nextDraft.clientId = String(ai.clientId);
-      if (ai.issuerId) nextDraft.issuerId = String(ai.issuerId);
-      if (ai.subject) nextDraft.subject = String(ai.subject).slice(0, 70);
-      if (ai.issueDate) nextDraft.issueDate = String(ai.issueDate);
-      if (ai.dueDate) nextDraft.dueDate = String(ai.dueDate);
-      if (ai.invoiceNo) nextDraft.invoiceNo = String(ai.invoiceNo);
+      if (selected.clientId) nextDraft.clientId = String(selected.clientId);
+      if (selected.issuerId) nextDraft.issuerId = String(selected.issuerId);
+      if (Array.isArray(selected.bankAccountIds)) {
+        nextDraft.bankAccountIds = selected.bankAccountIds.map((x: any) => String(x)).slice(0, 10);
+      }
+      if (selected.subject) nextDraft.subject = String(selected.subject).slice(0, 70);
+      if (selected.issueDate) nextDraft.issueDate = String(selected.issueDate);
+      if (selected.dueDate) nextDraft.dueDate = String(selected.dueDate);
+      if (selected.invoiceNo) nextDraft.invoiceNo = String(selected.invoiceNo);
+      if (selected.note) nextDraft.note = String(selected.note);
 
-      const aiItemsRaw = Array.isArray(ai.items) ? ai.items : [];
+      const aiItemsRaw = Array.isArray(selected.items) ? selected.items : [];
       const aiItems: InvoiceItem[] = aiItemsRaw.map((it: any) => {
         const qty = n(it.qty ?? 1);
         const unitPrice = n(it.unitPrice ?? it.price ?? 0);
@@ -415,20 +456,18 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
       if (mode === "header") {
         nextDraft.items = ensureMinItems(aiItems);
       } else {
-        // detail: 既存に追記（空行の先頭を埋める戦略）
         const merged = nextDraft.items.slice();
 
-        // まず空行を埋める
         let aiIdx = 0;
         for (let i = 0; i < merged.length && aiIdx < aiItems.length; i++) {
           const r = merged[i];
           const isEmpty = !r.name && !r.code && n(r.unitPrice) === 0;
           if (isEmpty) {
-            merged[i] = { ...aiItems[aiIdx], id: r.id }; // 既存行ID保持
+            merged[i] = { ...aiItems[aiIdx], id: r.id };
             aiIdx++;
           }
         }
-        // 残りは末尾追加（最大80）
+
         while (aiIdx < aiItems.length && merged.length < 80) {
           merged.push(aiItems[aiIdx++]);
         }
@@ -441,7 +480,8 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
       nextDraft.grandTotal = totals.grandTotal;
 
       setDraft(nextDraft);
-      setMsg("AI反映OK");
+      const warnings = Array.isArray(ai.warnings) ? ai.warnings : [];
+      setMsg(warnings.length ? `AI反映OK / 注意: ${warnings.join(" | ")}` : "AI反映OK");
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     }
@@ -452,6 +492,7 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
   }
 
   async function handleDownloadPdf() {
+    if (!draftId) return;
     try {
       setOutMsg("");
       setIsDownloading(true);
@@ -486,6 +527,7 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
   }
 
   async function handleSendMail() {
+    if (!draftId) return;
     try {
       setOutMsg("");
       if (!mailTo) {
@@ -517,6 +559,18 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
   }
 
   // ========= UI =========
+  if (!draftId) {
+    return (
+      <div className="page">
+        <div className="container">
+          <div className="card">
+            <div className="cardBody">URLのIDが取得できない（/drafts/[id] の id が空）</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="page">
@@ -563,7 +617,9 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
           <div className="cardHead">
             <div>
               <h3>指示文（AI自動記載用）</h3>
-              <div className="sub2">貼り付け → 「AIで反映」→ フォームに埋める（明細デフォ税率{draft.taxDefault}%）</div>
+              <div className="sub2">
+                貼り付け → 「AIで反映」→ フォームに埋める（明細デフォ税率{draft.taxDefault}%）
+              </div>
             </div>
             <div className="rightBadge">準備OK</div>
           </div>
@@ -620,12 +676,7 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
                           </option>
                         ))}
                       </select>
-                      <button
-                        className="miniBtn"
-                        type="button"
-                        onClick={() => router.push("/drafts/new")}
-                        title="登録UIは別途。いったん遷移先は仮。"
-                      >
+                      <button className="miniBtn" type="button" onClick={() => router.push("/drafts/new")}>
                         ＋登録
                       </button>
                     </div>
@@ -682,7 +733,12 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
                           try {
                             const token = await getIdToken();
                             const res = await fetch("/api/invoices/next-number", {
-                              headers: { Authorization: `Bearer ${token}` },
+                              method: "POST",
+                              headers: {
+                                "content-type": "application/json",
+                                Authorization: `Bearer ${token}`,
+                              },
+                              body: JSON.stringify({ issueDate: draft.issueDate }),
                               cache: "no-store",
                             });
                             const j = await res.json().catch(() => ({}));
@@ -728,12 +784,7 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
                       {draft.items.map((it, idx) => (
                         <tr key={it.id}>
                           <td>
-                            <input
-                              className="input"
-                              value={it.code}
-                              onChange={(e) => updateItem(idx, { code: e.target.value })}
-                              placeholder=""
-                            />
+                            <input className="input" value={it.code} onChange={(e) => updateItem(idx, { code: e.target.value })} />
                           </td>
                           <td>
                             <input
@@ -744,47 +795,22 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
                             />
                           </td>
                           <td>
-                            <input
-                              className="input"
-                              type="number"
-                              value={it.qty}
-                              min={0}
-                              step={1}
-                              onChange={(e) => updateItem(idx, { qty: n(e.target.value) })}
-                            />
+                            <input className="input" type="number" value={it.qty} min={0} step={1} onChange={(e) => updateItem(idx, { qty: n(e.target.value) })} />
                           </td>
                           <td>
-                            <input
-                              className="input"
-                              value={it.unit}
-                              onChange={(e) => updateItem(idx, { unit: e.target.value })}
-                              placeholder=""
-                            />
+                            <input className="input" value={it.unit} onChange={(e) => updateItem(idx, { unit: e.target.value })} />
                           </td>
                           <td>
-                            <input
-                              className="input"
-                              type="number"
-                              value={it.unitPrice}
-                              min={0}
-                              step={1}
-                              onChange={(e) => updateItem(idx, { unitPrice: n(e.target.value) })}
-                            />
+                            <input className="input" type="number" value={it.unitPrice} min={0} step={1} onChange={(e) => updateItem(idx, { unitPrice: n(e.target.value) })} />
                           </td>
                           <td>
-                            <select
-                              className="input"
-                              value={it.taxRate}
-                              onChange={(e) => updateItem(idx, { taxRate: n(e.target.value) as TaxRate })}
-                            >
+                            <select className="input" value={it.taxRate} onChange={(e) => updateItem(idx, { taxRate: n(e.target.value) as TaxRate })}>
                               <option value={10}>10%</option>
                               <option value={8}>8%</option>
                               <option value={0}>0%</option>
                             </select>
                           </td>
-                          <td style={{ textAlign: "right", fontWeight: 700 }}>
-                            {formatYen(it.amount)}
-                          </td>
+                          <td style={{ textAlign: "right", fontWeight: 700 }}>{formatYen(it.amount)}</td>
                           <td style={{ textAlign: "right" }}>
                             <button className="miniBtnDanger" type="button" onClick={() => removeRow(idx)}>
                               削除
@@ -958,7 +984,7 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
               </div>
             </section>
 
-            {/* ✅ Output card (RIGHT COLUMN) */}
+            {/* output */}
             <section className="card">
               <div className="cardHead">
                 <h3>出力（PDF）</h3>
@@ -981,12 +1007,7 @@ export default function DraftDetailPage({ params }: { params: { id: string } }) 
                     ))}
                   </select>
 
-                  <button
-                    className="btnOutline"
-                    onClick={handleSendMail}
-                    disabled={!mailTo || isSending}
-                    type="button"
-                  >
+                  <button className="btnOutline" onClick={handleSendMail} disabled={!mailTo || isSending} type="button">
                     {isSending ? "送信中…" : "この宛先へ送信"}
                   </button>
 
