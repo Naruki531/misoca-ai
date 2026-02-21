@@ -45,10 +45,19 @@ type Draft = {
 };
 
 type Client = { id: string; name: string; email?: string };
-type Issuer = { id: string; name: string };
+type Issuer = {
+  id: string;
+  name: string;
+  contactName?: string;
+  postal?: string;
+  address?: string;
+  tel?: string;
+  regNo?: string;
+};
 type Recipient = { id: string; email: string; label?: string };
 type BankAccount = {
   id: string;
+  label?: string;
   bankName: string;
   branchName: string;
   branchCode?: string;
@@ -240,9 +249,15 @@ export default function DraftDetailPage() {
         const issuerList: Issuer[] = (ij?.issuers || []).map((x: any) => ({
           id: String(x.id),
           name: String(x.name || ""),
+          contactName: x.contactName ? String(x.contactName) : "",
+          postal: x.postal ? String(x.postal) : "",
+          address: x.address ? String(x.address) : "",
+          tel: x.tel ? String(x.tel) : "",
+          regNo: x.regNo ? String(x.regNo) : "",
         }));
         const bankList: BankAccount[] = (bj?.bankAccounts || []).map((x: any) => ({
           id: String(x.id),
+          label: x.label ? String(x.label) : "",
           bankName: String(x.bankName || ""),
           branchName: String(x.branchName || ""),
           branchCode: x.branchCode ? String(x.branchCode) : "",
@@ -449,8 +464,21 @@ export default function DraftDetailPage() {
 
   async function handleAddIssuer() {
     try {
-      const name = window.prompt("請求元名を入力してください");
+      const name = window.prompt("自社名を入力してください（必須）");
       if (!name || !name.trim()) return;
+      const contactName = (window.prompt("担当者名（任意）", "") || "").trim();
+      const postal = (window.prompt("郵便番号（任意）", "") || "").trim();
+      const address = (window.prompt("住所（必須）", "") || "").trim();
+      if (!address) {
+        setErr("住所は必須です");
+        return;
+      }
+      const tel = (window.prompt("電話番号（必須）", "") || "").trim();
+      if (!tel) {
+        setErr("電話番号は必須です");
+        return;
+      }
+      const regNo = (window.prompt("適格請求書発行事業者登録番号（任意）", "") || "").trim();
 
       const token = await getIdToken();
       const res = await fetch("/api/issuers", {
@@ -459,12 +487,27 @@ export default function DraftDetailPage() {
           "content-type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ name: name.trim() }),
+        body: JSON.stringify({
+          name: name.trim(),
+          contactName,
+          postal,
+          address,
+          tel,
+          regNo,
+        }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j?.ok) throw new Error(j?.error || `issuer add failed: ${res.status}`);
 
-      const created: Issuer = { id: String(j.id), name: name.trim() };
+      const created: Issuer = {
+        id: String(j.id),
+        name: name.trim(),
+        contactName,
+        postal,
+        address,
+        tel,
+        regNo,
+      };
       setIssuers((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name, "ja")));
       setDraft((p) => ({ ...p, issuerId: created.id }));
       setMsg(`請求元を登録した: ${created.name}`);
@@ -506,6 +549,64 @@ export default function DraftDetailPage() {
       setOutMsg(`送信先を登録した: ${email}`);
     } catch (e: any) {
       setOutMsg(`送信先登録失敗: ${e?.message ?? String(e)}`);
+    }
+  }
+
+  async function handleAddBankAccount() {
+    try {
+      const label = (window.prompt("表示ラベル（任意）", "") || "").trim();
+      const bankName = (window.prompt("銀行名（必須）", "") || "").trim();
+      const branchName = (window.prompt("支店名（必須）", "") || "").trim();
+      const branchCode = (window.prompt("支店コード（任意）", "") || "").trim();
+      const accountType = (window.prompt("口座種別（必須: 普通/当座 など）", "普通") || "").trim();
+      const accountNumber = (window.prompt("口座番号（必須）", "") || "").trim();
+      const accountName = (window.prompt("口座名義（必須）", "") || "").trim();
+
+      if (!bankName || !branchName || !accountType || !accountNumber || !accountName) {
+        setErr("振込先の必須項目が不足しています");
+        return;
+      }
+
+      const token = await getIdToken();
+      const res = await fetch("/api/bank-accounts", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          label,
+          bankName,
+          branchName,
+          branchCode,
+          accountType,
+          accountNumber,
+          accountName,
+        }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.ok) throw new Error(j?.error || `bank add failed: ${res.status}`);
+
+      const created: BankAccount = {
+        id: String(j.id),
+        label,
+        bankName,
+        branchName,
+        branchCode,
+        accountType,
+        accountNumber,
+        accountName,
+      };
+      setBanks((prev) => [created, ...prev]);
+      setDraft((p) => ({
+        ...p,
+        bankAccountIds: p.bankAccountIds.includes(created.id)
+          ? p.bankAccountIds
+          : [...p.bankAccountIds, created.id].slice(0, 10),
+      }));
+      setMsg(`振込先を登録した: ${label || `${bankName} ${branchName}`}`);
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
     }
   }
 
@@ -1077,7 +1178,7 @@ export default function DraftDetailPage() {
 
               <div className="cardBody">
                 <div className="btnRow" style={{ marginBottom: 10 }}>
-                  <button className="miniBtn" type="button" onClick={() => router.push("/drafts/new")}>
+                  <button className="miniBtn" type="button" onClick={handleAddBankAccount}>
                     ＋登録
                   </button>
                 </div>

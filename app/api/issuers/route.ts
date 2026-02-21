@@ -27,16 +27,22 @@ export async function POST(req: Request) {
     const name = (body?.name ?? "").toString().trim();
     if (!name) return NextResponse.json({ ok: false, error: "name is required" }, { status: 400 });
 
-    const detail = (body?.detail ?? "").toString();
-    const address = (body?.address ?? "").toString();
-    const contact = (body?.contact ?? "").toString();
+    const contactName = (body?.contactName ?? "").toString().trim();
+    const postal = (body?.postal ?? "").toString().trim();
+    const address = (body?.address ?? "").toString().trim();
+    const tel = (body?.tel ?? "").toString().trim();
+    const regNo = (body?.regNo ?? "").toString().trim();
+    if (!address) return NextResponse.json({ ok: false, error: "address is required" }, { status: 400 });
+    if (!tel) return NextResponse.json({ ok: false, error: "tel is required" }, { status: 400 });
 
     const col = adminDb.collection("users").doc(uid).collection("issuers");
     const ref = await col.add({
       name,
-      detail,
+      contactName,
+      postal,
       address,
-      contact,
+      tel,
+      regNo,
       createdAt: now(),
       updatedAt: now(),
     });

@@ -26,9 +26,11 @@ export async function POST(req: Request) {
 
     const bankName = (body?.bankName ?? "").toString().trim();
     const branchName = (body?.branchName ?? "").toString().trim();
+    const branchCode = (body?.branchCode ?? "").toString().trim();
     const accountType = (body?.accountType ?? "").toString().trim(); // 普通/当座など
     const accountNumber = (body?.accountNumber ?? "").toString().trim();
     const accountName = (body?.accountName ?? "").toString().trim();
+    const label = (body?.label ?? "").toString().trim();
 
     if (!bankName || !branchName || !accountType || !accountNumber || !accountName) {
       return NextResponse.json({ ok: false, error: "missing fields" }, { status: 400 });
@@ -38,9 +40,11 @@ export async function POST(req: Request) {
     const ref = await col.add({
       bankName,
       branchName,
+      branchCode,
       accountType,
       accountNumber,
       accountName,
+      label,
       createdAt: now(),
       updatedAt: now(),
     });

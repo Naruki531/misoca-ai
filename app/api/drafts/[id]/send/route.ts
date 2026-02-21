@@ -104,6 +104,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       invoiceNo: d.invoiceNo ?? "",
       issuer: {
         name: issuer.name ?? "",
+        contactName: issuer.contactName ?? "",
         postal: issuer.postal ?? issuer.postcode ?? "",
         address: issuer.address ?? "",
         tel: issuer.tel ?? issuer.contact ?? "",

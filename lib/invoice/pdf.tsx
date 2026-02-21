@@ -4,6 +4,7 @@ import { Document, Font, Page, Text, View, StyleSheet } from "@react-pdf/rendere
 
 export type PdfIssuer = {
   name: string;
+  contactName?: string;
   postal?: string;
   address?: string;
   tel?: string;
@@ -193,6 +194,7 @@ export function buildInvoicePdf(data: PdfData) {
             <View style={styles.colRight}>
               <View style={styles.issuerBox}>
                 <Text style={styles.issuerName}>{data.issuer.name || "-"}</Text>
+                {!!data.issuer.contactName && <Text style={styles.issuerText}>担当: {data.issuer.contactName}</Text>}
                 {!!data.issuer.postal && <Text style={styles.issuerText}>〒{data.issuer.postal}</Text>}
                 {!!data.issuer.address && <Text style={styles.issuerText}>{data.issuer.address}</Text>}
                 {!!data.issuer.tel && <Text style={styles.issuerText}>TEL: {data.issuer.tel}</Text>}
