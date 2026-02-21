@@ -1,6 +1,6 @@
 // lib/invoice/pdf.tsx
 import React from "react";
-import { Document, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
+import { Document, Font, Page, Text, View, StyleSheet } from "@react-pdf/renderer";
 
 export type PdfIssuer = {
   name: string;
@@ -49,8 +49,24 @@ export type PdfData = {
   bank?: PdfBank;
 };
 
+// 日本語グリフを持つフォントを明示登録しないと文字化けする。
+Font.register({
+  family: "NotoSansJP",
+  fonts: [
+    { src: "https://fonts.gstatic.com/ea/notosansjapanese/v6/NotoSansJP-Regular.otf", fontWeight: 400 },
+    { src: "https://fonts.gstatic.com/ea/notosansjapanese/v6/NotoSansJP-Bold.otf", fontWeight: 700 },
+  ],
+});
+
 const styles = StyleSheet.create({
-  page: { paddingTop: 28, paddingBottom: 28, paddingHorizontal: 32, fontSize: 10, color: "#111827" },
+  page: {
+    paddingTop: 28,
+    paddingBottom: 28,
+    paddingHorizontal: 32,
+    fontSize: 10,
+    color: "#111827",
+    fontFamily: "NotoSansJP",
+  },
   headerTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   title: { fontSize: 24, fontWeight: 700, letterSpacing: 1.2 },
   issueMeta: { alignItems: "flex-end" },
