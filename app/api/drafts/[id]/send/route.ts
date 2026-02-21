@@ -1,7 +1,7 @@
 // app/api/drafts/[id]/send/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
-import { pdf } from "@react-pdf/renderer";
+import * as ReactPdf from "@react-pdf/renderer";
 import { buildInvoicePdf, PdfData } from "@/lib/invoice/pdf";
 import { adminAuth, adminDb } from "@/lib/firebase/admin";
 
@@ -27,51 +27,30 @@ function ymdToJa(ymd: string) {
   return `${y}年${m}月${d}日`;
 }
 
-/**
- * @react-pdf/renderer の出力が環境によって
- * - Buffer
- * - Uint8Array
- * - ReadableStream<Uint8Array>
- * のいずれかになり得るので Uint8Array に正規化する。
- */
-async function renderPdfToBytes(doc: any): Promise<Uint8Array> {
-  const out: any = pdf(doc);
+async function renderDocumentToBuffer(doc: any): Promise<Buffer> {
+  const maybeRenderToBuffer = (ReactPdf as any).renderToBuffer;
+  if (typeof maybeRenderToBuffer === "function") {
+    return await maybeRenderToBuffer(doc);
+  }
 
-  if (typeof out.toBuffer === "function") {
-    const b = await out.toBuffer();
-
-    // ReadableStream の場合
-    if (b && typeof (b as any).getReader === "function") {
-      const reader = (b as ReadableStream<Uint8Array>).getReader();
-      const chunks: Uint8Array[] = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) chunks.push(value);
-      }
-      const total = chunks.reduce((s, c) => s + c.byteLength, 0);
-      const bytes = new Uint8Array(total);
-      let offset = 0;
-      for (const c of chunks) {
-        bytes.set(c, offset);
-        offset += c.byteLength;
-      }
-      return bytes;
+  const out = (ReactPdf as any).pdf(doc);
+  if (!out || typeof out.toBuffer !== "function") {
+    throw new Error("PDF render method not found");
+  }
+  const b = await out.toBuffer();
+  if (Buffer.isBuffer(b)) return b;
+  if (b instanceof Uint8Array) return Buffer.from(b);
+  if (b && typeof b.getReader === "function") {
+    const reader = (b as ReadableStream<Uint8Array>).getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
     }
-
-    // Uint8Array の場合
-    if (b instanceof Uint8Array) return b;
-
-    // Buffer等の場合（Nodeでは Buffer は Uint8Array 互換）
-    return new Uint8Array(b);
+    return Buffer.concat(chunks.map((x) => Buffer.from(x)));
   }
-
-  if (typeof out.toBlob === "function") {
-    const blob = await out.toBlob();
-    return new Uint8Array(await blob.arrayBuffer());
-  }
-
-  throw new Error("PDF render output method not found");
+  return Buffer.from(b);
 }
 
 const resend = new Resend(mustEnv("RESEND_API_KEY"));
@@ -139,6 +118,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
             code: it.code ?? "",
             name: it.name ?? "",
             qty: Number(it.qty ?? 1),
+            unit: it.unit ?? "",
             unitPrice: Number(it.unitPrice ?? 0),
             amount: Number(it.amount ?? 0),
           }))
@@ -150,10 +130,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       bankText,
     };
 
-    // PDF生成 → Uint8Array → Buffer にして添付（Resend互換）
+    // PDF生成 → Buffer にして添付（Resend互換）
     const doc = buildInvoicePdf(data);
-    const bytes = await renderPdfToBytes(doc);
-    const attachment = Buffer.from(bytes);
+    const attachment = await renderDocumentToBuffer(doc);
+    if (!attachment || attachment.length === 0) {
+      throw new Error("PDF render failed: empty buffer");
+    }
 
     const subject = `請求書 ${data.invoiceNo || ""} ${data.subject || ""}`.trim();
     const html = `

@@ -36,3 +36,5 @@ pnpm-debug.log*
 firebase-sa.json
 *firebase-adminsdk*.json
 '@ | Set-Content .gitignore -Encoding UTF8
+
+.vercel
