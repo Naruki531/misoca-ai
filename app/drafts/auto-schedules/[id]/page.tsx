@@ -270,7 +270,7 @@ export default function AutoScheduleEditPage() {
                   {key}
                 </button>
               ))}
-              <div className="hint">例: `{{"{{MONTH_LABEL}}"}}` をセル側で作って BLOCK_1 に入れると月次で変化</div>
+              <div className="hint">例: {"{{MONTH_LABEL}}"} をセル側で作って BLOCK_1 に入れると月次で変化</div>
             </div>
           </div>
         </section>
@@ -382,7 +382,7 @@ export default function AutoScheduleEditPage() {
               </table>
             </div>
             <div className="hint" style={{ marginTop: 8 }}>
-              セルでは `{{"{{MONTH_LABEL}}"}}`, `{{"{{YYYY}}"}}`, `{{"{{MM}}"}}`, `{{"{{PREV_MONTH_LABEL}}"}}` などが使えます。
+              セルでは {"{{MONTH_LABEL}}"}, {"{{YYYY}}"}, {"{{MM}}"}, {"{{PREV_MONTH_LABEL}}"} などが使えます。
             </div>
           </div>
         </section>
@@ -390,7 +390,7 @@ export default function AutoScheduleEditPage() {
         <section className="card">
           <div className="cardHead"><h3>プレビュー（先頭行）</h3></div>
           <div className="cardBody">
-            <div className="hint">DATEトークン例: `{{"{{MONTH_LABEL}}"}}` → {preview.tokenPreview}</div>
+            <div className="hint">DATEトークン例: {"{{MONTH_LABEL}}"} → {preview.tokenPreview}</div>
             <div style={{ marginTop: 8 }}><b>件名:</b> {preview.subject || "-"}</div>
             <div style={{ marginTop: 6 }}><b>明細1行目:</b> {preview.item0 || "-"}</div>
             <div style={{ marginTop: 6 }}><b>備考:</b> {preview.note || "-"}</div>
