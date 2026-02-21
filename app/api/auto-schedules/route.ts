@@ -47,6 +47,11 @@ export async function POST(req: NextRequest) {
           }))
           .filter((r: any) => r.pattern && r.template)
       : [];
+    const fieldTemplates = body?.fieldTemplates && typeof body.fieldTemplates === "object"
+      ? body.fieldTemplates
+      : null;
+    const blockRows = Array.isArray(body?.blockRows) ? body.blockRows : [];
+    const blockKeys = Array.isArray(body?.blockKeys) ? body.blockKeys.map((x: any) => String(x)) : [];
 
     if (!templateDraftId) {
       return NextResponse.json({ ok: false, error: "templateDraftId is required" }, { status: 400 });
@@ -68,6 +73,9 @@ export async function POST(req: NextRequest) {
       autoSend,
       toEmail,
       rules,
+      fieldTemplates,
+      blockRows,
+      blockKeys,
       createdAt: now(),
       updatedAt: now(),
     });

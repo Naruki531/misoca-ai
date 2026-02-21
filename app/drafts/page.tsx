@@ -94,16 +94,6 @@ export default function DraftsHomePage() {
       setErr("");
       const name = (window.prompt("予約名を入力", d?.subject ? `定期: ${d.subject}` : "月次自動請求") || "").trim();
       if (!name) return;
-      const nextRunDate = (window.prompt("初回自動作成日 (YYYY-MM-DD)", d?.issueDate || "") || "").trim();
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(nextRunDate)) {
-        setErr("初回自動作成日は YYYY-MM-DD 形式で入力してください");
-        return;
-      }
-      const pattern = (window.prompt("置換する元文字列（例: 2025年12月分）", "") || "").trim();
-      const template = pattern
-        ? (window.prompt("置換テンプレート（例: {{MONTH_LABEL}}）", "{{MONTH_LABEL}}") || "").trim()
-        : "";
-      const toEmail = (window.prompt("自動送信先メールアドレス（任意）", "") || "").trim();
 
       const token = await getIdToken();
       const res = await fetch("/api/auto-schedules", {
@@ -115,16 +105,11 @@ export default function DraftsHomePage() {
         body: JSON.stringify({
           name,
           templateDraftId: String(d.id),
-          nextRunDate,
-          autoSend: !!toEmail,
-          toEmail,
-          rules: pattern && template ? [{ pattern, template }] : [],
         }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j?.ok) throw new Error(j?.error || `create schedule failed: ${res.status}`);
-      await loadData();
-      setActiveTab("auto");
+      router.push(`/drafts/auto-schedules/${j.id}`);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     }
@@ -405,6 +390,10 @@ export default function DraftsHomePage() {
                           )}
                         </td>
                         <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                          <button className="miniBtn" onClick={() => router.push(`/drafts/auto-schedules/${s.id}`)} type="button">
+                            設定
+                          </button>
+                          {" "}
                           <button
                             className="miniBtn"
                             onClick={() => runScheduleNow(s)}

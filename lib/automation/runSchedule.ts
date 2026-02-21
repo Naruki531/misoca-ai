@@ -2,7 +2,7 @@ import * as ReactPdf from "@react-pdf/renderer";
 import { Resend } from "resend";
 import { adminDb } from "@/lib/firebase/admin";
 import { buildInvoicePdf, PdfData } from "@/lib/invoice/pdf";
-import { applyTextRules, nextMonthYmd } from "@/lib/automation/template";
+import { applyTextRules, buildDateTokens, nextMonthYmd, renderRuleTemplate } from "@/lib/automation/template";
 
 export type AutoRule = {
   pattern: string;
@@ -17,6 +17,13 @@ export type AutoScheduleDoc = {
   autoSend?: boolean;
   toEmail?: string;
   rules?: AutoRule[];
+  fieldTemplates?: {
+    subjectTemplate?: string;
+    noteTemplate?: string;
+    itemNameTemplates?: string[];
+  } | null;
+  blockRows?: Array<{ runDate: string; values: Record<string, string> }>;
+  blockKeys?: string[];
   createdAt: number;
   updatedAt: number;
   lastRunAt?: number;
@@ -61,6 +68,12 @@ function withRules(value: any, rules: AutoRule[], runDate: string) {
   return applyTextRules(String(value ?? ""), rules, runDate);
 }
 
+function withBlocks(value: any, values: Record<string, string>) {
+  return String(value ?? "").replace(/\{\{(BLOCK_[0-9]+)\}\}/g, (_, key: string) => {
+    return values[key] ?? "";
+  });
+}
+
 function calcTotals(items: any[]) {
   const subTotal = items.reduce((s, it) => s + Number(it.amount ?? 0), 0);
   const taxTotal = items.reduce((s, it) => s + Math.floor(Number(it.amount ?? 0) * (Number(it.taxRate ?? 10) / 100)), 0);
@@ -80,17 +93,33 @@ export async function runAutoSchedule(uid: string, scheduleId: string, runDate: 
   const src = templateSnap.data() as any;
 
   const rules = Array.isArray(schedule.rules) ? schedule.rules : [];
+  const blockRow = Array.isArray(schedule.blockRows)
+    ? schedule.blockRows.find((r) => String(r?.runDate) === runDate)
+    : null;
+  const blockValues = blockRow?.values && typeof blockRow.values === "object"
+    ? blockRow.values
+    : {};
+  const dateTokens = buildDateTokens(runDate);
+  const expandedBlockValues: Record<string, string> = {};
+  for (const [k, v] of Object.entries(blockValues)) {
+    expandedBlockValues[k] = renderRuleTemplate(String(v ?? ""), dateTokens);
+  }
+  const fieldTemplates = schedule.fieldTemplates ?? {};
+  const applyAll = (v: any) => withRules(withBlocks(v, expandedBlockValues), rules, runDate);
+
   const items = Array.isArray(src.items)
-    ? src.items.slice(0, 80).map((it: any) => {
+    ? src.items.slice(0, 80).map((it: any, idx: number) => {
         const qty = Number(it?.qty ?? 1);
         const unitPrice = Number(it?.unitPrice ?? 0);
         const amount = Math.round(qty * unitPrice);
+        const itemNameTemplate =
+          Array.isArray(fieldTemplates?.itemNameTemplates) ? fieldTemplates.itemNameTemplates[idx] : undefined;
         return {
           id: String(it?.id ?? ""),
-          code: withRules(it?.code, rules, runDate),
-          name: withRules(it?.name, rules, runDate),
+          code: applyAll(it?.code),
+          name: applyAll(itemNameTemplate ?? it?.name),
           qty,
-          unit: withRules(it?.unit, rules, runDate),
+          unit: applyAll(it?.unit),
           unitPrice,
           taxRate: Number(it?.taxRate ?? src?.taxDefault ?? 10),
           amount,
@@ -100,22 +129,22 @@ export async function runAutoSchedule(uid: string, scheduleId: string, runDate: 
   const totals = calcTotals(items);
 
   const newDraft = {
-    instructionText: withRules(src?.instructionText, rules, runDate),
+    instructionText: applyAll(src?.instructionText),
     clientId: src?.clientId ?? "",
     issuerId: src?.issuerId ?? "",
     bankAccountIds: Array.isArray(src?.bankAccountIds)
       ? src.bankAccountIds.slice(0, 10).map((x: any) => String(x))
       : [],
-    subject: withRules(src?.subject, rules, runDate),
+    subject: applyAll(fieldTemplates?.subjectTemplate ?? src?.subject),
     issueDate: runDate,
-    dueDate: src?.dueDate ? withRules(src.dueDate, rules, runDate) : "",
+    dueDate: src?.dueDate ? applyAll(src.dueDate) : "",
     invoiceNo: "",
     items,
     taxDefault: Number(src?.taxDefault ?? 10),
     subTotal: totals.subTotal,
     taxTotal: totals.taxTotal,
     grandTotal: totals.grandTotal,
-    note: withRules(src?.note, rules, runDate),
+    note: applyAll(fieldTemplates?.noteTemplate ?? src?.note),
     createdAt: Date.now(),
     updatedAt: Date.now(),
     sourceDraftId: schedule.templateDraftId,
