@@ -328,51 +328,59 @@ export default function DraftDetailPage() {
     });
   }
 
-  async function saveDraft() {
-    if (!draftId) return;
-    setSaving(true);
-    setErr("");
-    setMsg("");
+  function buildDraftPayload() {
+    return {
+      instructionText: draft.instructionText,
+      clientId: draft.clientId,
+      issuerId: draft.issuerId,
+      bankAccountIds: draft.bankAccountIds,
+      subject: draft.subject,
+      issueDate: draft.issueDate,
+      dueDate: draft.dueDate,
+      invoiceNo: draft.invoiceNo,
+      items: draft.items,
+      taxDefault: draft.taxDefault,
+      subTotal: draft.subTotal,
+      taxTotal: draft.taxTotal,
+      grandTotal: draft.grandTotal,
+      note: draft.note,
+    };
+  }
+
+  async function persistDraft(options?: { silent?: boolean }) {
+    if (!draftId) throw new Error("draftId is empty");
+    const silent = !!options?.silent;
+    if (!silent) {
+      setSaving(true);
+      setErr("");
+      setMsg("");
+    }
+
     try {
       const token = await getIdToken();
-
       const res = await fetch(`/api/drafts/${draftId}`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          instructionText: draft.instructionText,
-
-          clientId: draft.clientId,
-          issuerId: draft.issuerId,
-          bankAccountIds: draft.bankAccountIds,
-
-          subject: draft.subject,
-          issueDate: draft.issueDate,
-          dueDate: draft.dueDate,
-          invoiceNo: draft.invoiceNo,
-
-          items: draft.items,
-          taxDefault: draft.taxDefault,
-          subTotal: draft.subTotal,
-          taxTotal: draft.taxTotal,
-          grandTotal: draft.grandTotal,
-
-          note: draft.note,
-        }),
+        body: JSON.stringify(buildDraftPayload()),
       });
-
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j?.ok) throw new Error(j?.error || `save failed: ${res.status}`);
 
-      setMsg(`保存した: ${draftId}`);
+      if (!silent) setMsg(`保存した: ${draftId}`);
+      return true;
     } catch (e: any) {
-      setErr(e?.message ?? String(e));
+      if (!silent) setErr(e?.message ?? String(e));
+      throw e;
     } finally {
-      setSaving(false);
+      if (!silent) setSaving(false);
     }
+  }
+
+  async function saveDraft() {
+    await persistDraft();
   }
 
   async function applyAi(mode: "header" | "detail") {
@@ -496,6 +504,7 @@ export default function DraftDetailPage() {
     try {
       setOutMsg("");
       setIsDownloading(true);
+      await persistDraft({ silent: true });
       const token = await getIdToken();
 
       const res = await fetch(`/api/drafts/${draftId}/pdf`, {
@@ -535,6 +544,7 @@ export default function DraftDetailPage() {
         return;
       }
       setIsSending(true);
+      await persistDraft({ silent: true });
 
       const token = await getIdToken();
       const res = await fetch(`/api/drafts/${draftId}/send`, {
