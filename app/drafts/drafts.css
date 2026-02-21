@@ -74,6 +74,39 @@
   gap: 12px;
 }
 
+.menuGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.menuCard {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 18px;
+  transition: 120ms ease;
+}
+
+.menuCard:hover {
+  border-color: #93c5fd;
+  box-shadow: 0 8px 20px rgba(59, 130, 246, 0.12);
+}
+
+.menuTitle {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.menuDesc {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #4b5563;
+}
+
 .card {
   background: #fff;
   border: 1px solid #e5e7eb;
@@ -301,6 +334,10 @@
 
 @media (max-width: 1080px) {
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .menuGrid {
     grid-template-columns: 1fr;
   }
 

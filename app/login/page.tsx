@@ -18,7 +18,7 @@ export default function LoginPage() {
     setError("");
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      window.location.href = "/drafts/new";
+      window.location.href = "/drafts";
     } catch (e: any) {
       setError(e.message ?? "ログインに失敗しました");
     } finally {
@@ -31,7 +31,7 @@ export default function LoginPage() {
     setError("");
     try {
       await createUserWithEmailAndPassword(auth, email, password);
-      window.location.href = "/drafts/new";
+      window.location.href = "/drafts";
     } catch (e: any) {
       setError(e.message ?? "アカウント作成に失敗しました");
     } finally {

@@ -121,9 +121,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
       throw new Error("PDF render failed: empty buffer");
     }
 
-    const bytes = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    const ab = new ArrayBuffer(buffer.byteLength);
+    new Uint8Array(ab).set(buffer);
 
-    return new NextResponse(bytes, {
+    return new NextResponse(ab, {
       headers: {
         "content-type": "application/pdf",
         "content-disposition": `attachment; filename="invoice_${data.invoiceNo || id}.pdf"`,
