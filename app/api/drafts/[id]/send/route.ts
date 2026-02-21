@@ -53,11 +53,11 @@ async function renderDocumentToBuffer(doc: any): Promise<Buffer> {
   return Buffer.from(b);
 }
 
-const resend = new Resend(mustEnv("RESEND_API_KEY"));
-const FROM = mustEnv("MAIL_FROM");
-
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
+    const resend = new Resend(mustEnv("RESEND_API_KEY"));
+    const FROM = mustEnv("MAIL_FROM");
+
     const { id } = await ctx.params;
 
     const token = mustBearer(req);
