@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/auto-invoices",
+      "schedule": "10 0 * * *"
+    }
+  ]
+}

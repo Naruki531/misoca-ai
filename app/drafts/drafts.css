@@ -483,6 +483,11 @@
   font-size: 18px;
 }
 
+.listTable .docSub {
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 .dueOver {
   color: #e34a4a;
   font-weight: 700;
