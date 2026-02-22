@@ -6,6 +6,7 @@ import { onAuthStateChanged } from "firebase/auth";
 import { auth } from "@/lib/firebase/client";
 import { getIdToken } from "@/lib/auth/client";
 import { buildDateTokens, renderRuleTemplate } from "@/lib/automation/template";
+import { resolveBlockRowValues } from "@/lib/automation/cellFormula";
 
 type BlockRow = {
   runDate: string;
@@ -43,6 +44,12 @@ export default function AutoScheduleEditPage() {
   const [itemNameTemplates, setItemNameTemplates] = useState<string[]>([]);
   const [blockKeys, setBlockKeys] = useState<string[]>(["BLOCK_1", "BLOCK_2", "BLOCK_3"]);
   const [blockRows, setBlockRows] = useState<BlockRow[]>([]);
+
+  function blockClass(key: string) {
+    const n = (Number(key.replace("BLOCK_", "")) || 1) - 1;
+    const idx = ((n % 8) + 8) % 8;
+    return `blockTag blockTag${idx + 1}`;
+  }
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -156,10 +163,28 @@ export default function AutoScheduleEditPage() {
     ]);
   }
 
+  function autoFillDownByKey(key: string) {
+    setBlockRows((prev) => {
+      if (prev.length <= 1) return prev;
+      const next = prev.map((r) => ({ ...r, values: { ...(r.values || {}) } }));
+      for (let i = 1; i < next.length; i++) {
+        if (!String(next[i].values?.[key] ?? "").trim()) {
+          next[i].values[key] = String(next[i - 1].values?.[key] ?? "");
+        }
+      }
+      return next;
+    });
+  }
+
   const preview = useMemo(() => {
     const row = blockRows[0];
     const runDate = row?.runDate || nextRunDate;
-    const values = row?.values || {};
+    const values = resolveBlockRowValues(
+      runDate || nextMonth("", 0),
+      blockKeys,
+      row?.values || {},
+      {}
+    );
     const apply = (text: string) =>
       String(text ?? "").replace(/\{\{(BLOCK_[0-9]+)\}\}/g, (_, key: string) => values[key] ?? "");
     return {
@@ -259,7 +284,7 @@ export default function AutoScheduleEditPage() {
               {blockKeys.map((key) => (
                 <button
                   key={key}
-                  className="miniBtn"
+                  className={`${blockClass(key)}`}
                   draggable
                   onDragStart={(e) => {
                     e.dataTransfer.setData("text/plain", key);
@@ -271,6 +296,9 @@ export default function AutoScheduleEditPage() {
                 </button>
               ))}
               <div className="hint">例: {"{{MONTH_LABEL}}"} をセル側で作って BLOCK_1 に入れると月次で変化</div>
+              <div className="hint">
+                {"関数: =MONTH_LABEL(), =YYYY(), =MM(), =TEXT(\"請求 {{MONTH_LABEL}}\"), =CONCAT(BLOCK_1,\" 費用\"), =COPYUP()"}
+              </div>
             </div>
           </div>
         </section>
@@ -333,7 +361,14 @@ export default function AutoScheduleEditPage() {
                 <thead>
                   <tr>
                     <th style={{ width: 160 }}>自動作成日</th>
-                    {blockKeys.map((k) => <th key={k}>{k}</th>)}
+                    {blockKeys.map((k) => (
+                      <th key={k}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span className={blockClass(k)} style={{ cursor: "default" }}>{k}</span>
+                          <button className="miniBtn" onClick={() => autoFillDownByKey(k)} type="button">↓オートフィル</button>
+                        </div>
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -374,6 +409,9 @@ export default function AutoScheduleEditPage() {
                             }
                             placeholder={`例: ${k === "BLOCK_1" ? "{{MONTH_LABEL}}" : ""}`}
                           />
+                          <div className="hint2" style={{ marginTop: 4 }}>
+                            例: {renderRuleTemplate(String(r.values?.[k] ?? ""), buildDateTokens(r.runDate || nextRunDate || nextMonth("", 0)))}
+                          </div>
                         </td>
                       ))}
                     </tr>
