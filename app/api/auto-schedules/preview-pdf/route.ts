@@ -68,8 +68,11 @@ export async function POST(req: NextRequest) {
           taxRate: Number(it?.taxRate ?? src?.taxDefault ?? 10),
         }))
       : [];
-    const subTotal = items.reduce((s, it) => s + Number(it.amount ?? 0), 0);
-    const taxTotal = items.reduce((s, it) => s + Math.floor(Number(it.amount ?? 0) * (Number(it.taxRate ?? 10) / 100)), 0);
+    const subTotal = items.reduce((s: number, it: any) => s + Number(it.amount ?? 0), 0);
+    const taxTotal = items.reduce(
+      (s: number, it: any) => s + Math.floor(Number(it.amount ?? 0) * (Number(it.taxRate ?? 10) / 100)),
+      0
+    );
     const grandTotal = subTotal + taxTotal;
 
     const clientId = src?.clientId ?? "";
