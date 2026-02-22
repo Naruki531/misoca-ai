@@ -44,6 +44,10 @@ export default function AutoScheduleEditPage() {
   const [itemNameTemplates, setItemNameTemplates] = useState<string[]>([]);
   const [blockKeys, setBlockKeys] = useState<string[]>(["BLOCK_1", "BLOCK_2", "BLOCK_3"]);
   const [blockRows, setBlockRows] = useState<BlockRow[]>([]);
+  const [compactMode, setCompactMode] = useState(true);
+  const [rangeEndDate, setRangeEndDate] = useState("");
+  const [fillMode, setFillMode] = useState<"copy" | "series">("copy");
+  const [fillKey, setFillKey] = useState("BLOCK_1");
 
   function blockClass(key: string) {
     const n = (Number(key.replace("BLOCK_", "")) || 1) - 1;
@@ -86,6 +90,7 @@ export default function AutoScheduleEditPage() {
       setItemNameTemplates(Array.isArray(ft.itemNameTemplates) ? ft.itemNameTemplates.map((x: any) => String(x ?? "")) : []);
       const keys = Array.isArray(s.blockKeys) && s.blockKeys.length > 0 ? s.blockKeys.map((x: any) => String(x)) : ["BLOCK_1", "BLOCK_2", "BLOCK_3"];
       setBlockKeys(keys);
+      setFillKey(keys[0] || "BLOCK_1");
       if (Array.isArray(s.blockRows) && s.blockRows.length > 0) {
         setBlockRows(
           s.blockRows.map((r: any) => ({
@@ -101,6 +106,7 @@ export default function AutoScheduleEditPage() {
           }))
         );
       }
+      setRangeEndDate(nextMonth(String(s.nextRunDate || ""), 12));
 
       if (!Array.isArray(ft.itemNameTemplates) || ft.itemNameTemplates.length === 0) {
         const dRes = await fetch(`/api/drafts/${String(s.templateDraftId ?? "")}`, {
@@ -161,6 +167,57 @@ export default function AutoScheduleEditPage() {
         values: {},
       },
     ]);
+  }
+
+  function generateRowsUntilDate() {
+    const start = nextRunDate || blockRows[0]?.runDate;
+    if (!start || !rangeEndDate) return;
+    const list: string[] = [];
+    const [sy, sm, sd] = start.split("-").map((x) => Number(x));
+    const [ey, em, ed] = rangeEndDate.split("-").map((x) => Number(x));
+    if (!sy || !sm || !sd || !ey || !em || !ed) return;
+    let i = 0;
+    while (i < 240) {
+      const ymd = nextMonth(start, i);
+      if (ymd > rangeEndDate) break;
+      list.push(ymd);
+      i++;
+    }
+
+    setBlockRows((prev) => {
+      const map = new Map<string, BlockRow>();
+      for (const r of prev) map.set(r.runDate, r);
+      return list.map((d) => map.get(d) || { runDate: d, values: {} });
+    });
+  }
+
+  function incrementFirstNumber(text: string, plus: number) {
+    const m = String(text).match(/(\d+)/);
+    if (!m) return text;
+    const raw = m[1];
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return text;
+    const next = String(n + plus).padStart(raw.length, "0");
+    return text.replace(raw, next);
+  }
+
+  function applyFillSelectedKey() {
+    setBlockRows((prev) => {
+      if (prev.length <= 1) return prev;
+      const next = prev.map((r) => ({ ...r, values: { ...(r.values || {}) } }));
+      let seedIdx = next.findIndex((r) => String(r.values?.[fillKey] ?? "").trim() !== "");
+      if (seedIdx < 0) seedIdx = 0;
+      const seed = String(next[seedIdx].values?.[fillKey] ?? "");
+      if (!seed) return prev;
+      for (let i = seedIdx + 1; i < next.length; i++) {
+        if (fillMode === "copy") {
+          next[i].values[fillKey] = seed;
+        } else {
+          next[i].values[fillKey] = incrementFirstNumber(seed, i - seedIdx);
+        }
+      }
+      return next;
+    });
   }
 
   function autoFillDownByKey(key: string) {
@@ -353,10 +410,35 @@ export default function AutoScheduleEditPage() {
         <section className="card">
           <div className="cardHead">
             <h3>規則セル（発行日 × ブロック）</h3>
-            <button className="miniBtn" onClick={addRow} type="button">＋行追加</button>
+            <div className="topActions">
+              <button className="miniBtn" onClick={addRow} type="button">＋行追加</button>
+              <label className="hint2" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input type="checkbox" checked={compactMode} onChange={(e) => setCompactMode(e.target.checked)} />
+                コンパクト表示
+              </label>
+            </div>
           </div>
           <div className="cardBody">
-            <div className="tableWrap">
+            <div className="btnRow" style={{ marginBottom: 8 }}>
+              <div className="row">
+                <div className="hint2">行生成 終了日:</div>
+                <input className="input" style={{ width: 160 }} type="date" value={rangeEndDate} onChange={(e) => setRangeEndDate(e.target.value)} />
+                <button className="miniBtn" onClick={generateRowsUntilDate} type="button">この日付まで行生成</button>
+              </div>
+              <div className="row">
+                <div className="hint2">オートフィル:</div>
+                <select className="input" style={{ width: 140 }} value={fillMode} onChange={(e) => setFillMode(e.target.value as any)}>
+                  <option value="copy">同一コピー</option>
+                  <option value="series">連番コピー</option>
+                </select>
+                <select className="input" style={{ width: 140 }} value={fillKey} onChange={(e) => setFillKey(e.target.value)}>
+                  {blockKeys.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+                <button className="miniBtn" onClick={applyFillSelectedKey} type="button">適用</button>
+              </div>
+            </div>
+
+            <div className={`tableWrap ${compactMode ? "compactRuleGrid" : ""}`}>
               <table className="table">
                 <thead>
                   <tr>
@@ -391,7 +473,7 @@ export default function AutoScheduleEditPage() {
                       {blockKeys.map((k) => (
                         <td key={k}>
                           <input
-                            className="input"
+                            className={`input ${compactMode ? "compactInput" : ""}`}
                             value={String(r.values?.[k] ?? "")}
                             onChange={(e) =>
                               setBlockRows((prev) => {
@@ -409,9 +491,11 @@ export default function AutoScheduleEditPage() {
                             }
                             placeholder={`例: ${k === "BLOCK_1" ? "{{MONTH_LABEL}}" : ""}`}
                           />
-                          <div className="hint2" style={{ marginTop: 4 }}>
-                            例: {renderRuleTemplate(String(r.values?.[k] ?? ""), buildDateTokens(r.runDate || nextRunDate || nextMonth("", 0)))}
-                          </div>
+                          {!compactMode ? (
+                            <div className="hint2" style={{ marginTop: 4 }}>
+                              例: {renderRuleTemplate(String(r.values?.[k] ?? ""), buildDateTokens(r.runDate || nextRunDate || nextMonth("", 0)))}
+                            </div>
+                          ) : null}
                         </td>
                       ))}
                     </tr>
