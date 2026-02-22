@@ -2,7 +2,8 @@ import * as ReactPdf from "@react-pdf/renderer";
 import { Resend } from "resend";
 import { adminDb } from "@/lib/firebase/admin";
 import { buildInvoicePdf, PdfData } from "@/lib/invoice/pdf";
-import { applyTextRules, buildDateTokens, nextMonthYmd, renderRuleTemplate } from "@/lib/automation/template";
+import { applyTextRules, nextMonthYmd } from "@/lib/automation/template";
+import { resolveBlockRowValues } from "@/lib/automation/cellFormula";
 
 export type AutoRule = {
   pattern: string;
@@ -18,9 +19,15 @@ export type AutoScheduleDoc = {
   toEmail?: string;
   rules?: AutoRule[];
   fieldTemplates?: {
+    instructionTextTemplate?: string;
     subjectTemplate?: string;
+    issueDateTemplate?: string;
+    dueDateTemplate?: string;
+    invoiceNoTemplate?: string;
     noteTemplate?: string;
+    itemCodeTemplates?: string[];
     itemNameTemplates?: string[];
+    itemUnitTemplates?: string[];
   } | null;
   blockRows?: Array<{ runDate: string; values: Record<string, string> }>;
   blockKeys?: string[];
@@ -96,14 +103,22 @@ export async function runAutoSchedule(uid: string, scheduleId: string, runDate: 
   const blockRow = Array.isArray(schedule.blockRows)
     ? schedule.blockRows.find((r) => String(r?.runDate) === runDate)
     : null;
-  const blockValues = blockRow?.values && typeof blockRow.values === "object"
-    ? blockRow.values
-    : {};
-  const dateTokens = buildDateTokens(runDate);
-  const expandedBlockValues: Record<string, string> = {};
-  for (const [k, v] of Object.entries(blockValues)) {
-    expandedBlockValues[k] = renderRuleTemplate(String(v ?? ""), dateTokens);
-  }
+  const blockValues = blockRow?.values && typeof blockRow.values === "object" ? blockRow.values : {};
+  const prevRow = Array.isArray(schedule.blockRows)
+    ? schedule.blockRows.find((r) => String(r?.runDate) < runDate)
+    : null;
+  const prevResolved = resolveBlockRowValues(
+    String(prevRow?.runDate ?? runDate),
+    Array.isArray(schedule.blockKeys) ? schedule.blockKeys : Object.keys(blockValues),
+    (prevRow?.values as any) || {},
+    {}
+  );
+  const expandedBlockValues = resolveBlockRowValues(
+    runDate,
+    Array.isArray(schedule.blockKeys) ? schedule.blockKeys : Object.keys(blockValues),
+    blockValues as any,
+    prevResolved
+  );
   const fieldTemplates = schedule.fieldTemplates ?? {};
   const applyAll = (v: any) => withRules(withBlocks(v, expandedBlockValues), rules, runDate);
 
@@ -112,14 +127,18 @@ export async function runAutoSchedule(uid: string, scheduleId: string, runDate: 
         const qty = Number(it?.qty ?? 1);
         const unitPrice = Number(it?.unitPrice ?? 0);
         const amount = Math.round(qty * unitPrice);
+        const itemCodeTemplate =
+          Array.isArray(fieldTemplates?.itemCodeTemplates) ? fieldTemplates.itemCodeTemplates[idx] : undefined;
         const itemNameTemplate =
           Array.isArray(fieldTemplates?.itemNameTemplates) ? fieldTemplates.itemNameTemplates[idx] : undefined;
+        const itemUnitTemplate =
+          Array.isArray(fieldTemplates?.itemUnitTemplates) ? fieldTemplates.itemUnitTemplates[idx] : undefined;
         return {
           id: String(it?.id ?? ""),
-          code: applyAll(it?.code),
+          code: applyAll(itemCodeTemplate ?? it?.code),
           name: applyAll(itemNameTemplate ?? it?.name),
           qty,
-          unit: applyAll(it?.unit),
+          unit: applyAll(itemUnitTemplate ?? it?.unit),
           unitPrice,
           taxRate: Number(it?.taxRate ?? src?.taxDefault ?? 10),
           amount,
@@ -129,16 +148,16 @@ export async function runAutoSchedule(uid: string, scheduleId: string, runDate: 
   const totals = calcTotals(items);
 
   const newDraft = {
-    instructionText: applyAll(src?.instructionText),
+    instructionText: applyAll(fieldTemplates?.instructionTextTemplate ?? src?.instructionText),
     clientId: src?.clientId ?? "",
     issuerId: src?.issuerId ?? "",
     bankAccountIds: Array.isArray(src?.bankAccountIds)
       ? src.bankAccountIds.slice(0, 10).map((x: any) => String(x))
       : [],
     subject: applyAll(fieldTemplates?.subjectTemplate ?? src?.subject),
-    issueDate: runDate,
-    dueDate: src?.dueDate ? applyAll(src.dueDate) : "",
-    invoiceNo: "",
+    issueDate: applyAll(fieldTemplates?.issueDateTemplate ?? runDate),
+    dueDate: applyAll(fieldTemplates?.dueDateTemplate ?? (src?.dueDate || "")),
+    invoiceNo: applyAll(fieldTemplates?.invoiceNoTemplate ?? ""),
     items,
     taxDefault: Number(src?.taxDefault ?? 10),
     subTotal: totals.subTotal,
