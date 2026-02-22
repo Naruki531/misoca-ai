@@ -39,6 +39,7 @@ export async function POST(req: NextRequest) {
     const nextRunDate = String(body?.nextRunDate ?? todayYmd()).trim();
     const autoSend = !!body?.autoSend;
     const toEmail = String(body?.toEmail ?? "").trim();
+    const toName = String(body?.toName ?? "").trim();
     const rules = Array.isArray(body?.rules)
       ? body.rules
           .map((r: any) => ({
@@ -72,6 +73,7 @@ export async function POST(req: NextRequest) {
       active: true,
       autoSend,
       toEmail,
+      toName,
       rules,
       fieldTemplates,
       blockRows,

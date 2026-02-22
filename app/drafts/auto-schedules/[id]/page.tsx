@@ -22,6 +22,8 @@ type BasePreviewItem = {
   taxRate: number;
 };
 
+const SPECIAL_BLOCK_KEYS = ["BLOCK_RUN_DATE", "BLOCK_RUN_EOM"];
+
 function nextMonth(dateYmd: string, i: number) {
   const [y, m, d] = String(dateYmd || "").split("-").map((x) => Number(x));
   const base = Number.isFinite(y) && Number.isFinite(m) && Number.isFinite(d) ? new Date(y, m - 1, d) : new Date();
@@ -30,6 +32,44 @@ function nextMonth(dateYmd: string, i: number) {
   const mm = String(dt.getMonth() + 1).padStart(2, "0");
   const dd = String(dt.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function incrementFirstNumber(text: string, plus: number) {
+  const m = String(text).match(/(\d+)/);
+  if (!m) return text;
+  const raw = m[1];
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return text;
+  const next = String(n + plus).padStart(raw.length, "0");
+  return text.replace(raw, next);
+}
+
+function seriesValueByRunDate(seed: string, runDate: string, plus: number) {
+  const s = String(seed ?? "");
+  if (!s.trim()) return s;
+  const rd = String(runDate ?? "").trim();
+  if (!rd) return incrementFirstNumber(s, plus);
+  const t = buildDateTokens(rd);
+  let replaced = false;
+  let out = s;
+
+  out = out.replace(/(\d{4})年\s*(\d{1,2})月/g, (_, _y: string, m: string) => {
+    replaced = true;
+    const mm = m.length >= 2 ? t.MM : t.M;
+    return `${t.YYYY}年${mm}月`;
+  });
+  out = out.replace(/(\d{4})([/-])(\d{1,2})(?!\d)/g, (_, _y: string, sep: string, m: string) => {
+    replaced = true;
+    const mm = m.length >= 2 ? t.MM : t.M;
+    return `${t.YYYY}${sep}${mm}`;
+  });
+  out = out.replace(/(\d{1,2})月/g, (_, m: string) => {
+    replaced = true;
+    const mm = m.length >= 2 ? t.MM : t.M;
+    return `${mm}月`;
+  });
+  if (replaced) return out;
+  return incrementFirstNumber(s, plus);
 }
 
 export default function AutoScheduleEditPage() {
@@ -41,15 +81,17 @@ export default function AutoScheduleEditPage() {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
-  const [draggingBlock, setDraggingBlock] = useState<string>("");
-  const [templateDraftId, setTemplateDraftId] = useState("");
-  const [previewPdfUrl, setPreviewPdfUrl] = useState("");
+  const [draggingBlock, setDraggingBlock] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewPdfUrl, setPreviewPdfUrl] = useState("");
 
+  const [templateDraftId, setTemplateDraftId] = useState("");
   const [scheduleName, setScheduleName] = useState("");
   const [nextRunDate, setNextRunDate] = useState("");
   const [autoSend, setAutoSend] = useState(false);
+  const [toName, setToName] = useState("");
   const [toEmail, setToEmail] = useState("");
+  const [recipients, setRecipients] = useState<Array<{ id: string; email: string; label?: string }>>([]);
 
   const [instructionTextTemplate, setInstructionTextTemplate] = useState("");
   const [subjectTemplate, setSubjectTemplate] = useState("");
@@ -61,6 +103,7 @@ export default function AutoScheduleEditPage() {
   const [itemNameTemplates, setItemNameTemplates] = useState<string[]>([]);
   const [itemUnitTemplates, setItemUnitTemplates] = useState<string[]>([]);
   const [previewItemsBase, setPreviewItemsBase] = useState<BasePreviewItem[]>([]);
+
   const [blockKeys, setBlockKeys] = useState<string[]>(["BLOCK_1", "BLOCK_2", "BLOCK_3"]);
   const [blockRows, setBlockRows] = useState<BlockRow[]>([]);
   const [compactMode, setCompactMode] = useState(true);
@@ -69,6 +112,8 @@ export default function AutoScheduleEditPage() {
   const [fillKey, setFillKey] = useState("BLOCK_1");
 
   function blockClass(key: string) {
+    if (key === "BLOCK_RUN_DATE") return "blockTag blockTag6";
+    if (key === "BLOCK_RUN_EOM") return "blockTag blockTag7";
     const n = (Number(key.replace("BLOCK_", "")) || 1) - 1;
     const idx = ((n % 8) + 8) % 8;
     return `blockTag blockTag${idx + 1}`;
@@ -86,6 +131,12 @@ export default function AutoScheduleEditPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scheduleId]);
 
+  useEffect(() => {
+    return () => {
+      if (previewPdfUrl) URL.revokeObjectURL(previewPdfUrl);
+    };
+  }, [previewPdfUrl]);
+
   async function load() {
     if (!scheduleId) return;
     setLoading(true);
@@ -99,11 +150,14 @@ export default function AutoScheduleEditPage() {
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j?.ok) throw new Error(j?.error || `load failed: ${res.status}`);
       const s = j.schedule || {};
+
       setTemplateDraftId(String(s.templateDraftId ?? ""));
       setScheduleName(String(s.name ?? ""));
       setNextRunDate(String(s.nextRunDate ?? ""));
       setAutoSend(!!s.autoSend);
+      setToName(String(s.toName ?? ""));
       setToEmail(String(s.toEmail ?? ""));
+
       const ft = s.fieldTemplates || {};
       setInstructionTextTemplate(String(ft.instructionTextTemplate ?? ""));
       setSubjectTemplate(String(ft.subjectTemplate ?? ""));
@@ -114,9 +168,14 @@ export default function AutoScheduleEditPage() {
       setItemCodeTemplates(Array.isArray(ft.itemCodeTemplates) ? ft.itemCodeTemplates.map((x: any) => String(x ?? "")) : []);
       setItemNameTemplates(Array.isArray(ft.itemNameTemplates) ? ft.itemNameTemplates.map((x: any) => String(x ?? "")) : []);
       setItemUnitTemplates(Array.isArray(ft.itemUnitTemplates) ? ft.itemUnitTemplates.map((x: any) => String(x ?? "")) : []);
-      const keys = Array.isArray(s.blockKeys) && s.blockKeys.length > 0 ? s.blockKeys.map((x: any) => String(x)) : ["BLOCK_1", "BLOCK_2", "BLOCK_3"];
+
+      const keys =
+        Array.isArray(s.blockKeys) && s.blockKeys.length > 0
+          ? s.blockKeys.map((x: any) => String(x))
+          : ["BLOCK_1", "BLOCK_2", "BLOCK_3"];
       setBlockKeys(keys);
       setFillKey(keys[0] || "BLOCK_1");
+
       if (Array.isArray(s.blockRows) && s.blockRows.length > 0) {
         setBlockRows(
           s.blockRows.map((r: any) => ({
@@ -134,34 +193,49 @@ export default function AutoScheduleEditPage() {
       }
       setRangeEndDate(nextMonth(String(s.nextRunDate || ""), 12));
 
-      if (!Array.isArray(ft.itemNameTemplates) || ft.itemNameTemplates.length === 0) {
-        const dRes = await fetch(`/api/drafts/${String(s.templateDraftId ?? "")}`, {
+      const [dRes, rRes] = await Promise.all([
+        fetch(`/api/drafts/${String(s.templateDraftId ?? "")}`, {
           headers: { Authorization: `Bearer ${token}` },
           cache: "no-store",
-        });
-        const dj = await dRes.json().catch(() => ({}));
-        if (dRes.ok && dj?.ok) {
-          const srcItems = Array.isArray(dj?.draft?.items) ? dj.draft.items : [];
-          setInstructionTextTemplate((p) => p || String(dj?.draft?.instructionText ?? ""));
-          setItemNameTemplates(srcItems.map((it: any) => String(it?.name ?? "")));
-          setItemCodeTemplates(srcItems.map((it: any) => String(it?.code ?? "")));
-          setItemUnitTemplates(srcItems.map((it: any) => String(it?.unit ?? "")));
-          setPreviewItemsBase(
-            srcItems.map((it: any) => ({
-              code: String(it?.code ?? ""),
-              name: String(it?.name ?? ""),
-              qty: Number(it?.qty ?? 1),
-              unit: String(it?.unit ?? ""),
-              unitPrice: Number(it?.unitPrice ?? 0),
-              taxRate: Number(it?.taxRate ?? 10),
-            }))
-          );
-          if (!subjectTemplate) setSubjectTemplate(String(dj?.draft?.subject ?? ""));
-          if (!noteTemplate) setNoteTemplate(String(dj?.draft?.note ?? ""));
-          if (!issueDateTemplate) setIssueDateTemplate(String(dj?.draft?.issueDate ?? ""));
-          if (!dueDateTemplate) setDueDateTemplate(String(dj?.draft?.dueDate ?? ""));
-          if (!invoiceNoTemplate) setInvoiceNoTemplate(String(dj?.draft?.invoiceNo ?? ""));
-        }
+        }),
+        fetch("/api/recipients", {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        }),
+      ]);
+
+      const rj = await rRes.json().catch(() => ({}));
+      if (rRes.ok && rj?.ok) {
+        setRecipients(
+          Array.isArray(rj.recipients)
+            ? rj.recipients.map((x: any) => ({ id: String(x.id ?? ""), email: String(x.email ?? ""), label: x.label ? String(x.label) : "" }))
+            : []
+        );
+      }
+
+      const dj = await dRes.json().catch(() => ({}));
+      if (dRes.ok && dj?.ok) {
+        const src = dj?.draft || {};
+        const srcItems = Array.isArray(src.items) ? src.items : [];
+        setPreviewItemsBase(
+          srcItems.map((it: any) => ({
+            code: String(it?.code ?? ""),
+            name: String(it?.name ?? ""),
+            qty: Number(it?.qty ?? 1),
+            unit: String(it?.unit ?? ""),
+            unitPrice: Number(it?.unitPrice ?? 0),
+            taxRate: Number(it?.taxRate ?? 10),
+          }))
+        );
+        if (!instructionTextTemplate) setInstructionTextTemplate(String(src?.instructionText ?? ""));
+        if (!subjectTemplate) setSubjectTemplate(String(src?.subject ?? ""));
+        if (!issueDateTemplate) setIssueDateTemplate(String(src?.issueDate ?? ""));
+        if (!dueDateTemplate) setDueDateTemplate(String(src?.dueDate ?? ""));
+        if (!invoiceNoTemplate) setInvoiceNoTemplate(String(src?.invoiceNo ?? ""));
+        if (!noteTemplate) setNoteTemplate(String(src?.note ?? ""));
+        if (itemCodeTemplates.length === 0) setItemCodeTemplates(srcItems.map((it: any) => String(it?.code ?? "")));
+        if (itemNameTemplates.length === 0) setItemNameTemplates(srcItems.map((it: any) => String(it?.name ?? "")));
+        if (itemUnitTemplates.length === 0) setItemUnitTemplates(srcItems.map((it: any) => String(it?.unit ?? "")));
       }
     } catch (e: any) {
       setErr(e?.message ?? String(e));
@@ -170,29 +244,49 @@ export default function AutoScheduleEditPage() {
     }
   }
 
-  function insertToken(target: "subject" | "note" | "item", idxOrKey: number | string, blockKey: string) {
+  function insertToken(
+    target: "instructionText" | "subject" | "issueDate" | "dueDate" | "invoiceNo" | "note" | "itemCode" | "itemName" | "itemUnit",
+    idx: number | string,
+    blockKey: string
+  ) {
     const token = `{{${blockKey}}}`;
-    if (target === "subject") {
-      setSubjectTemplate((p) => `${p}${token}`);
-      return;
+    if (target === "instructionText") return setInstructionTextTemplate((p) => `${p}${token}`);
+    if (target === "subject") return setSubjectTemplate((p) => `${p}${token}`);
+    if (target === "issueDate") return setIssueDateTemplate((p) => `${p}${token}`);
+    if (target === "dueDate") return setDueDateTemplate((p) => `${p}${token}`);
+    if (target === "invoiceNo") return setInvoiceNoTemplate((p) => `${p}${token}`);
+    if (target === "note") return setNoteTemplate((p) => `${p}${token}`);
+    const i = Number(idx);
+    if (target === "itemCode") {
+      return setItemCodeTemplates((prev) => {
+        const next = prev.slice();
+        next[i] = `${next[i] ?? ""}${token}`;
+        return next;
+      });
     }
-    if (target === "note") {
-      setNoteTemplate((p) => `${p}${token}`);
-      return;
+    if (target === "itemName") {
+      return setItemNameTemplates((prev) => {
+        const next = prev.slice();
+        next[i] = `${next[i] ?? ""}${token}`;
+        return next;
+      });
     }
-    const idx = Number(idxOrKey);
-    setItemNameTemplates((prev) => {
+    return setItemUnitTemplates((prev) => {
       const next = prev.slice();
-      next[idx] = `${next[idx] ?? ""}${token}`;
+      next[i] = `${next[i] ?? ""}${token}`;
       return next;
     });
   }
 
-  function onDrop(target: "subject" | "note" | "item", idxOrKey: number | string, e: any) {
+  function onDrop(
+    target: "instructionText" | "subject" | "issueDate" | "dueDate" | "invoiceNo" | "note" | "itemCode" | "itemName" | "itemUnit",
+    idx: number | string,
+    e: any
+  ) {
     e.preventDefault();
     const key = e.dataTransfer.getData("text/plain") || draggingBlock;
     if (!key) return;
-    insertToken(target, idxOrKey, key);
+    insertToken(target, idx, key);
     setDraggingBlock("");
   }
 
@@ -204,84 +298,24 @@ export default function AutoScheduleEditPage() {
   function addRow() {
     setBlockRows((prev) => [
       ...prev,
-      {
-        runDate: nextMonth(nextRunDate || prev[prev.length - 1]?.runDate || "", 1),
-        values: {},
-      },
+      { runDate: nextMonth(nextRunDate || prev[prev.length - 1]?.runDate || "", 1), values: {} },
     ]);
   }
 
   function generateRowsUntilDate() {
     const start = nextRunDate || blockRows[0]?.runDate;
     if (!start || !rangeEndDate) return;
-    const list: string[] = [];
-    const [sy, sm, sd] = start.split("-").map((x) => Number(x));
-    const [ey, em, ed] = rangeEndDate.split("-").map((x) => Number(x));
-    if (!sy || !sm || !sd || !ey || !em || !ed) return;
-    let i = 0;
-    while (i < 240) {
-      const ymd = nextMonth(start, i);
-      if (ymd > rangeEndDate) break;
-      list.push(ymd);
-      i++;
+    const dates: string[] = [];
+    for (let i = 0; i < 240; i++) {
+      const d = nextMonth(start, i);
+      if (d > rangeEndDate) break;
+      dates.push(d);
     }
-
     setBlockRows((prev) => {
       const map = new Map<string, BlockRow>();
       for (const r of prev) map.set(r.runDate, r);
-      return list.map((d) => map.get(d) || { runDate: d, values: {} });
+      return dates.map((d) => map.get(d) || { runDate: d, values: {} });
     });
-  }
-
-  function incrementFirstNumber(text: string, plus: number) {
-    const m = String(text).match(/(\d+)/);
-    if (!m) return text;
-    const raw = m[1];
-    const n = Number(raw);
-    if (!Number.isFinite(n)) return text;
-    const next = String(n + plus).padStart(raw.length, "0");
-    return text.replace(raw, next);
-  }
-
-  function seriesValueByRunDate(seed: string, runDate: string, plus: number) {
-    const s = String(seed ?? "");
-    if (!s.trim()) return s;
-    const rd = String(runDate ?? "").trim();
-    if (!rd) return incrementFirstNumber(s, plus);
-
-    const t = buildDateTokens(rd);
-    let replaced = false;
-    let out = s;
-
-    // 2026年2月 / 2026年02月
-    out = out.replace(/(\d{4})年\s*(\d{1,2})月/g, (_, _y: string, m: string) => {
-      replaced = true;
-      const mm = m.length >= 2 ? t.MM : t.M;
-      return `${t.YYYY}年${mm}月`;
-    });
-
-    // 2026/2, 2026/02, 2026-2, 2026-02
-    out = out.replace(/(\d{4})([/-])(\d{1,2})(?!\d)/g, (_, _y: string, sep: string, m: string) => {
-      replaced = true;
-      const mm = m.length >= 2 ? t.MM : t.M;
-      return `${t.YYYY}${sep}${mm}`;
-    });
-
-    // 2月 / 02月
-    out = out.replace(/(\d{1,2})月/g, (_, m: string) => {
-      replaced = true;
-      const mm = m.length >= 2 ? t.MM : t.M;
-      return `${mm}月`;
-    });
-
-    // YYYYMM / YYYY-MM / YYYY/MM
-    out = out.replace(/(\d{4})(\d{2})(?!\d)/g, () => {
-      replaced = true;
-      return `${t.YYYY}${t.MM}`;
-    });
-
-    if (replaced) return out;
-    return incrementFirstNumber(s, plus);
   }
 
   function applyFillSelectedKey() {
@@ -293,40 +327,43 @@ export default function AutoScheduleEditPage() {
       const seed = String(next[seedIdx].values?.[fillKey] ?? "");
       if (!seed) return prev;
       for (let i = seedIdx + 1; i < next.length; i++) {
-        if (fillMode === "copy") {
-          next[i].values[fillKey] = seed;
-        } else {
-          next[i].values[fillKey] = seriesValueByRunDate(seed, String(next[i].runDate ?? ""), i - seedIdx);
-        }
+        next[i].values[fillKey] =
+          fillMode === "copy" ? seed : seriesValueByRunDate(seed, String(next[i].runDate ?? ""), i - seedIdx);
       }
       return next;
     });
   }
 
-  function autoFillDownByKey(key: string) {
-    setBlockRows((prev) => {
-      if (prev.length <= 1) return prev;
-      const next = prev.map((r) => ({ ...r, values: { ...(r.values || {}) } }));
-      for (let i = 1; i < next.length; i++) {
-        if (!String(next[i].values?.[key] ?? "").trim()) {
-          next[i].values[key] = String(next[i - 1].values?.[key] ?? "");
-        }
-      }
-      return next;
-    });
+  async function addRecipient() {
+    try {
+      const label = (window.prompt("送信先名（必須）", "") || "").trim();
+      if (!label) return setErr("送信先名は必須です");
+      const email = (window.prompt("送信先メールアドレス（必須）", "") || "").trim().toLowerCase();
+      if (!email || !email.includes("@")) return setErr("送信先メールアドレスが不正です");
+      const token = await getIdToken();
+      const res = await fetch("/api/recipients", {
+        method: "POST",
+        headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ label, email }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || !j?.ok) throw new Error(j?.error || `recipient add failed: ${res.status}`);
+      setRecipients((prev) => (prev.some((r) => r.email === email) ? prev : [...prev, { id: String(j.id ?? email), email, label }]));
+      setToName(label);
+      setToEmail(email);
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    }
   }
 
   const preview = useMemo(() => {
     const row = blockRows[0];
-    const runDate = row?.runDate || nextRunDate;
-    const values = resolveBlockRowValues(
-      runDate || nextMonth("", 0),
-      blockKeys,
-      row?.values || {},
-      {}
-    );
-    const apply = (text: string) =>
-      String(text ?? "").replace(/\{\{(BLOCK_[0-9]+)\}\}/g, (_, key: string) => values[key] ?? "");
+    const runDate = row?.runDate || nextRunDate || nextMonth("", 0);
+    const values = resolveBlockRowValues(runDate, blockKeys, row?.values || {}, {});
+    values.BLOCK_RUN_DATE = runDate;
+    const eom = new Date(runDate.slice(0, 4) as any, Number(runDate.slice(5, 7)), 0);
+    values.BLOCK_RUN_EOM = `${eom.getFullYear()}-${String(eom.getMonth() + 1).padStart(2, "0")}-${String(eom.getDate()).padStart(2, "0")}`;
+    const apply = (text: string) => String(text ?? "").replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, k: string) => values[k] ?? "");
     const items = previewItemsBase.map((it, i) => {
       const code = apply(itemCodeTemplates[i] || it.code || "");
       const name = apply(itemNameTemplates[i] || it.name || "");
@@ -334,30 +371,23 @@ export default function AutoScheduleEditPage() {
       const amount = Math.round(Number(it.qty || 0) * Number(it.unitPrice || 0));
       return { ...it, code, name, unit, amount };
     });
-    const subTotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
-    const taxTotal = items.reduce((s, it) => s + Math.floor(Number(it.amount || 0) * (Number(it.taxRate || 10) / 100)), 0);
+    const subTotal = items.reduce((s, it) => s + Number((it as any).amount || 0), 0);
+    const taxTotal = items.reduce((s, it) => s + Math.floor(Number((it as any).amount || 0) * (Number(it.taxRate || 10) / 100)), 0);
     const grandTotal = subTotal + taxTotal;
     return {
-      runDate: runDate || "-",
-      issueDate: apply(issueDateTemplate || runDate || ""),
+      runDate,
+      issueDate: apply(issueDateTemplate || runDate),
       dueDate: apply(dueDateTemplate || ""),
       invoiceNo: apply(invoiceNoTemplate || ""),
       subject: apply(subjectTemplate),
       note: apply(noteTemplate),
-      item0: apply(itemNameTemplates[0] || ""),
+      tokenPreview: renderRuleTemplate("{{MONTH_LABEL}}", buildDateTokens(runDate)),
       items,
       subTotal,
       taxTotal,
       grandTotal,
-      tokenPreview: renderRuleTemplate("{{MONTH_LABEL}}", buildDateTokens(runDate || nextMonth("", 0))),
     };
-  }, [blockRows, nextRunDate, issueDateTemplate, dueDateTemplate, invoiceNoTemplate, subjectTemplate, noteTemplate, itemCodeTemplates, itemNameTemplates, itemUnitTemplates, previewItemsBase]);
-
-  useEffect(() => {
-    return () => {
-      if (previewPdfUrl) URL.revokeObjectURL(previewPdfUrl);
-    };
-  }, [previewPdfUrl]);
+  }, [blockRows, nextRunDate, blockKeys, issueDateTemplate, dueDateTemplate, invoiceNoTemplate, subjectTemplate, noteTemplate, itemCodeTemplates, itemNameTemplates, itemUnitTemplates, previewItemsBase]);
 
   async function refreshPdfPreview() {
     try {
@@ -365,16 +395,10 @@ export default function AutoScheduleEditPage() {
       setErr("");
       const token = await getIdToken();
       const runDate = blockRows[0]?.runDate || nextRunDate;
-      if (!runDate) {
-        setErr("プレビュー用の実行日がありません");
-        return;
-      }
+      if (!runDate) throw new Error("プレビュー用の実行日がありません");
       const res = await fetch("/api/auto-schedules/preview-pdf", {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           templateDraftId,
           runDate,
@@ -393,14 +417,10 @@ export default function AutoScheduleEditPage() {
           },
         }),
       });
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(t || `preview failed: ${res.status}`);
-      }
+      if (!res.ok) throw new Error(await res.text());
       const blob = await res.blob();
       if (previewPdfUrl) URL.revokeObjectURL(previewPdfUrl);
-      const url = URL.createObjectURL(blob);
-      setPreviewPdfUrl(url);
+      setPreviewPdfUrl(URL.createObjectURL(blob));
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     } finally {
@@ -416,14 +436,12 @@ export default function AutoScheduleEditPage() {
       const token = await getIdToken();
       const res = await fetch(`/api/auto-schedules/${scheduleId}`, {
         method: "PATCH",
-        headers: {
-          "content-type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "content-type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           name: scheduleName,
           nextRunDate,
           autoSend,
+          toName,
           toEmail,
           blockKeys,
           blockRows,
@@ -451,11 +469,7 @@ export default function AutoScheduleEditPage() {
   }
 
   if (loading) {
-    return (
-      <div className="page">
-        <div className="container"><div className="card"><div className="cardBody">読み込み中…</div></div></div>
-      </div>
-    );
+    return <div className="page"><div className="container"><div className="card"><div className="cardBody">読み込み中…</div></div></div></div>;
   }
 
   return (
@@ -464,7 +478,7 @@ export default function AutoScheduleEditPage() {
         <div className="topBar">
           <div>
             <h1>自動予約設定</h1>
-            <div className="sub">ドラッグ&ドロップでブロックを差し込み、セルで次回以降の値を設定</div>
+            <div className="sub">ブロックを差し込み、規則セルで値を制御します</div>
           </div>
           <div className="topActions">
             <button className="btnOutline" onClick={() => router.push("/drafts")} type="button">一覧へ戻る</button>
@@ -481,14 +495,27 @@ export default function AutoScheduleEditPage() {
             <div className="formGrid">
               <div className="field"><label>予約名</label><input className="input" value={scheduleName} onChange={(e) => setScheduleName(e.target.value)} /></div>
               <div className="field"><label>次回作成日</label><input className="input" type="date" value={nextRunDate} onChange={(e) => setNextRunDate(e.target.value)} /></div>
+              <div className="field"><label>自動送信</label><select className="input" value={autoSend ? "on" : "off"} onChange={(e) => setAutoSend(e.target.value === "on")}><option value="off">OFF</option><option value="on">ON</option></select></div>
+              <div className="field"><label>送信先名</label><input className="input" value={toName} onChange={(e) => setToName(e.target.value)} /></div>
               <div className="field">
-                <label>自動送信</label>
-                <select className="input" value={autoSend ? "on" : "off"} onChange={(e) => setAutoSend(e.target.value === "on")}>
-                  <option value="off">OFF</option>
-                  <option value="on">ON</option>
-                </select>
+                <label>送信先メール</label>
+                <div className="row">
+                  <select
+                    className="input"
+                    value={toEmail}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setToEmail(v);
+                      const hit = recipients.find((r) => r.email === v);
+                      if (hit?.label) setToName(hit.label);
+                    }}
+                  >
+                    <option value="">選択</option>
+                    {recipients.map((r) => <option key={r.id} value={r.email}>{r.label ? `${r.label} <${r.email}>` : r.email}</option>)}
+                  </select>
+                  <button className="miniBtn" onClick={addRecipient} type="button">＋登録</button>
+                </div>
               </div>
-              <div className="field"><label>送信先メール（自動送信ON時）</label><input className="input" value={toEmail} onChange={(e) => setToEmail(e.target.value)} /></div>
             </div>
           </div>
         </section>
@@ -500,123 +527,33 @@ export default function AutoScheduleEditPage() {
           </div>
           <div className="cardBody">
             <div className="btnRow">
-              {blockKeys.map((key) => (
-                <button
-                  key={key}
-                  className={`${blockClass(key)}`}
-                  draggable
-                  onDragStart={(e) => {
-                    e.dataTransfer.setData("text/plain", key);
-                    setDraggingBlock(key);
-                  }}
-                  type="button"
-                >
-                  {key}
-                </button>
+              {[...SPECIAL_BLOCK_KEYS, ...blockKeys].map((key) => (
+                <button key={key} className={blockClass(key)} draggable onDragStart={(e) => { e.dataTransfer.setData("text/plain", key); setDraggingBlock(key); }} type="button">{key}</button>
               ))}
-              <div className="hint">例: {"{{MONTH_LABEL}}"} をセル側で作って BLOCK_1 に入れると月次で変化</div>
-              <div className="hint">
-                {"関数: =MONTH_LABEL(), =YYYY(), =MM(), =TEXT(\"請求 {{MONTH_LABEL}}\"), =CONCAT(BLOCK_1,\" 費用\"), =COPYUP()"}
-              </div>
+              <div className="hint">特別ブロック: {"{{BLOCK_RUN_DATE}}"}（自動作成日） / {"{{BLOCK_RUN_EOM}}"}（その月末日）</div>
             </div>
           </div>
         </section>
 
         <section className="card">
-          <div className="cardHead"><h3>請求書テンプレート（ブロック差し込み）</h3></div>
+          <div className="cardHead"><h3>請求書テンプレート（全項目）</h3></div>
           <div className="cardBody">
-            <div className="field">
-              <label>指示文テンプレート（任意）</label>
-              <textarea
-                className="textarea"
-                rows={3}
-                value={instructionTextTemplate}
-                onChange={(e) => setInstructionTextTemplate(e.target.value)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => onDrop("note", "note", e)}
-              />
-            </div>
-            <div className="field" style={{ marginTop: 10 }}>
-              <label>件名</label>
-              <input
-                className="input"
-                value={subjectTemplate}
-                onChange={(e) => setSubjectTemplate(e.target.value)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => onDrop("subject", "subject", e)}
-              />
-            </div>
+            <div className="field"><label>指示文テンプレート</label><textarea className="textarea" rows={3} value={instructionTextTemplate} onChange={(e) => setInstructionTextTemplate(e.target.value)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("instructionText", 0, e)} /></div>
+            <div className="field" style={{ marginTop: 10 }}><label>件名</label><input className="input" value={subjectTemplate} onChange={(e) => setSubjectTemplate(e.target.value)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("subject", 0, e)} /></div>
             <div className="formGrid" style={{ marginTop: 10 }}>
-              <div className="field">
-                <label>請求日テンプレート</label>
-                <input className="input" value={issueDateTemplate} onChange={(e) => setIssueDateTemplate(e.target.value)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("subject", "subject", e)} />
-              </div>
-              <div className="field">
-                <label>支払期限テンプレート</label>
-                <input className="input" value={dueDateTemplate} onChange={(e) => setDueDateTemplate(e.target.value)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("subject", "subject", e)} />
-              </div>
+              <div className="field"><label>請求日テンプレート</label><input className="input" value={issueDateTemplate} onChange={(e) => setIssueDateTemplate(e.target.value)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("issueDate", 0, e)} /></div>
+              <div className="field"><label>支払期限テンプレート</label><input className="input" value={dueDateTemplate} onChange={(e) => setDueDateTemplate(e.target.value)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("dueDate", 0, e)} /></div>
             </div>
+            <div className="field" style={{ marginTop: 10 }}><label>請求書番号テンプレート</label><input className="input" value={invoiceNoTemplate} onChange={(e) => setInvoiceNoTemplate(e.target.value)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("invoiceNo", 0, e)} /></div>
+            <div className="field" style={{ marginTop: 10 }}><label>備考</label><textarea className="textarea" value={noteTemplate} onChange={(e) => setNoteTemplate(e.target.value)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("note", 0, e)} /></div>
             <div className="field" style={{ marginTop: 10 }}>
-              <label>請求書番号テンプレート</label>
-              <input className="input" value={invoiceNoTemplate} onChange={(e) => setInvoiceNoTemplate(e.target.value)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("subject", "subject", e)} />
-            </div>
-            <div className="field" style={{ marginTop: 10 }}>
-              <label>備考</label>
-              <textarea
-                className="textarea"
-                value={noteTemplate}
-                onChange={(e) => setNoteTemplate(e.target.value)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => onDrop("note", "note", e)}
-              />
-            </div>
-            <div className="field" style={{ marginTop: 10 }}>
-              <label>明細 品名テンプレート</label>
+              <label>明細テンプレート（品番/品名/単位）</label>
               <div style={{ display: "grid", gap: 6 }}>
                 {itemNameTemplates.map((v, i) => (
                   <div key={i} style={{ display: "grid", gridTemplateColumns: "140px 1fr 120px", gap: 6 }}>
-                    <input
-                      className="input"
-                      value={itemCodeTemplates[i] ?? ""}
-                      onChange={(e) =>
-                        setItemCodeTemplates((prev) => {
-                          const next = prev.slice();
-                          next[i] = e.target.value;
-                          return next;
-                        })
-                      }
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => onDrop("item", i, e)}
-                      placeholder="品番"
-                    />
-                    <input
-                      className="input"
-                      value={v}
-                      onChange={(e) =>
-                        setItemNameTemplates((prev) => {
-                          const next = prev.slice();
-                          next[i] = e.target.value;
-                          return next;
-                        })
-                      }
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => onDrop("item", i, e)}
-                      placeholder="品名"
-                    />
-                    <input
-                      className="input"
-                      value={itemUnitTemplates[i] ?? ""}
-                      onChange={(e) =>
-                        setItemUnitTemplates((prev) => {
-                          const next = prev.slice();
-                          next[i] = e.target.value;
-                          return next;
-                        })
-                      }
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => onDrop("item", i, e)}
-                      placeholder="単位"
-                    />
+                    <input className="input" value={itemCodeTemplates[i] ?? ""} onChange={(e) => setItemCodeTemplates((p) => { const n = p.slice(); n[i] = e.target.value; return n; })} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("itemCode", i, e)} placeholder="品番" />
+                    <input className="input" value={v} onChange={(e) => setItemNameTemplates((p) => { const n = p.slice(); n[i] = e.target.value; return n; })} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("itemName", i, e)} placeholder="品名" />
+                    <input className="input" value={itemUnitTemplates[i] ?? ""} onChange={(e) => setItemUnitTemplates((p) => { const n = p.slice(); n[i] = e.target.value; return n; })} onDragOver={(e) => e.preventDefault()} onDrop={(e) => onDrop("itemUnit", i, e)} placeholder="単位" />
                   </div>
                 ))}
               </div>
@@ -664,7 +601,6 @@ export default function AutoScheduleEditPage() {
                       <th key={k}>
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                           <span className={blockClass(k)} style={{ cursor: "default" }}>{k}</span>
-                          <button className="miniBtn" onClick={() => autoFillDownByKey(k)} type="button">↓オートフィル</button>
                         </div>
                       </th>
                     ))}
@@ -673,46 +609,11 @@ export default function AutoScheduleEditPage() {
                 <tbody>
                   {blockRows.map((r, idx) => (
                     <tr key={idx}>
-                      <td>
-                        <input
-                          className="input"
-                          type="date"
-                          value={r.runDate}
-                          onChange={(e) =>
-                            setBlockRows((prev) => {
-                              const next = prev.slice();
-                              next[idx] = { ...next[idx], runDate: e.target.value };
-                              return next;
-                            })
-                          }
-                        />
-                      </td>
+                      <td><input className="input" type="date" value={r.runDate} onChange={(e) => setBlockRows((p) => { const n = p.slice(); n[idx] = { ...n[idx], runDate: e.target.value }; return n; })} /></td>
                       {blockKeys.map((k) => (
                         <td key={k}>
-                          <input
-                            className={`input ${compactMode ? "compactInput" : ""}`}
-                            value={String(r.values?.[k] ?? "")}
-                            onChange={(e) =>
-                              setBlockRows((prev) => {
-                                const next = prev.slice();
-                                const row = next[idx];
-                                next[idx] = {
-                                  ...row,
-                                  values: {
-                                    ...(row.values || {}),
-                                    [k]: e.target.value,
-                                  },
-                                };
-                                return next;
-                              })
-                            }
-                            placeholder={`例: ${k === "BLOCK_1" ? "{{MONTH_LABEL}}" : ""}`}
-                          />
-                          {!compactMode ? (
-                            <div className="hint2" style={{ marginTop: 4 }}>
-                              例: {renderRuleTemplate(String(r.values?.[k] ?? ""), buildDateTokens(r.runDate || nextRunDate || nextMonth("", 0)))}
-                            </div>
-                          ) : null}
+                          <input className={`input ${compactMode ? "compactInput" : ""}`} value={String(r.values?.[k] ?? "")} onChange={(e) => setBlockRows((p) => { const n = p.slice(); const row = n[idx]; n[idx] = { ...row, values: { ...(row.values || {}), [k]: e.target.value } }; return n; })} placeholder={`例: ${k === "BLOCK_1" ? "{{MONTH_LABEL}}" : ""}`} />
+                          {!compactMode ? <div className="hint2" style={{ marginTop: 4 }}>例: {renderRuleTemplate(String(r.values?.[k] ?? ""), buildDateTokens(r.runDate || nextRunDate || nextMonth("", 0)))}</div> : null}
                         </td>
                       ))}
                     </tr>
@@ -720,92 +621,25 @@ export default function AutoScheduleEditPage() {
                 </tbody>
               </table>
             </div>
-            <div className="hint" style={{ marginTop: 8 }}>
-              セルでは {"{{MONTH_LABEL}}"}, {"{{YYYY}}"}, {"{{MM}}"}, {"{{PREV_MONTH_LABEL}}"} などが使えます。
-            </div>
+            <div className="hint" style={{ marginTop: 8 }}>セルでは {"{{MONTH_LABEL}}"}, {"{{YYYY}}"}, {"{{MM}}"} などが使えます。</div>
           </div>
         </section>
 
         <section className="card">
-          <div className="cardHead"><h3>請求書プレビュー（先頭行の設定値）</h3></div>
+          <div className="cardHead"><h3>請求書プレビュー（PDF全体）</h3></div>
           <div className="cardBody">
             <div className="btnRow" style={{ marginBottom: 8 }}>
               <button className="btn" onClick={refreshPdfPreview} disabled={previewLoading} type="button">
                 {previewLoading ? "PDF生成中…" : "PDF全体プレビュー更新"}
               </button>
             </div>
-            <div className="hint">DATEトークン例: {"{{MONTH_LABEL}}"} → {preview.tokenPreview}</div>
-            <div className="hint" style={{ marginTop: 4 }}>自動作成日: {preview.runDate}</div>
-            <div className="hint" style={{ marginTop: 4 }}>請求日: {preview.issueDate || "-"} / 支払期限: {preview.dueDate || "-"} / 請求書番号: {preview.invoiceNo || "-"}</div>
-
-            <div style={{ border: "1px solid #d1d5db", borderRadius: 10, marginTop: 10, overflow: "hidden", background: "#fff" }}>
-              <div style={{ padding: "12px 14px", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ fontSize: 22, fontWeight: 700 }}>請求書</div>
-                <div style={{ fontSize: 12, color: "#6b7280" }}>発行日: {preview.runDate}</div>
-              </div>
-
-              <div style={{ padding: "12px 14px", borderBottom: "1px solid #eef2f7" }}>
-                <div style={{ fontSize: 12, color: "#6b7280" }}>件名</div>
-                <div style={{ fontSize: 16, fontWeight: 700, marginTop: 4 }}>{preview.subject || "-"}</div>
-                <div style={{ marginTop: 8, fontSize: 12, color: "#4b5563", whiteSpace: "pre-wrap" }}>{preview.note || "-"}</div>
-              </div>
-
-              <div className="tableWrap" style={{ borderBottom: "1px solid #eef2f7" }}>
-                <table className="table" style={{ minWidth: "unset" }}>
-                  <thead>
-                    <tr>
-                      <th style={{ width: 120 }}>品番</th>
-                      <th>品名</th>
-                      <th style={{ width: 90, textAlign: "right" }}>数量</th>
-                      <th style={{ width: 90 }}>単位</th>
-                      <th style={{ width: 120, textAlign: "right" }}>単価</th>
-                      <th style={{ width: 120, textAlign: "right" }}>金額</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.items.length === 0 ? (
-                      <tr><td colSpan={6} style={{ color: "#6b7280" }}>明細なし</td></tr>
-                    ) : (
-                      preview.items.map((it, i) => (
-                        <tr key={i}>
-                          <td>{it.code || "-"}</td>
-                          <td>{it.name || "-"}</td>
-                          <td style={{ textAlign: "right" }}>{it.qty}</td>
-                          <td>{it.unit || "-"}</td>
-                          <td style={{ textAlign: "right" }}>{Number(it.unitPrice || 0).toLocaleString("ja-JP")}</td>
-                          <td style={{ textAlign: "right", fontWeight: 700 }}>{Number(it.amount || 0).toLocaleString("ja-JP")}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <div style={{ padding: "10px 14px", display: "grid", gap: 4, justifyContent: "end" }}>
-                <div style={{ display: "flex", gap: 14, justifyContent: "space-between", minWidth: 220 }}>
-                  <span style={{ color: "#6b7280" }}>小計</span>
-                  <b>{preview.subTotal.toLocaleString("ja-JP")}円</b>
-                </div>
-                <div style={{ display: "flex", gap: 14, justifyContent: "space-between", minWidth: 220 }}>
-                  <span style={{ color: "#6b7280" }}>消費税</span>
-                  <b>{preview.taxTotal.toLocaleString("ja-JP")}円</b>
-                </div>
-                <div style={{ display: "flex", gap: 14, justifyContent: "space-between", minWidth: 220, fontSize: 18 }}>
-                  <span>合計</span>
-                  <b>{preview.grandTotal.toLocaleString("ja-JP")}円</b>
-                </div>
-              </div>
-            </div>
-
+            <div className="hint">自動作成日: {preview.runDate} / 請求日: {preview.issueDate || "-"} / 支払期限: {preview.dueDate || "-"}</div>
+            <div className="hint">請求書番号: {preview.invoiceNo || "-"} / DATEトークン例: {"{{MONTH_LABEL}}"} → {preview.tokenPreview}</div>
             <div style={{ marginTop: 12 }}>
               {previewPdfUrl ? (
-                <iframe
-                  title="invoice-pdf-preview"
-                  src={previewPdfUrl}
-                  style={{ width: "100%", height: "980px", border: "1px solid #d1d5db", borderRadius: 8, background: "#fff" }}
-                />
+                <iframe title="invoice-pdf-preview" src={previewPdfUrl} style={{ width: "100%", height: "980px", border: "1px solid #d1d5db", borderRadius: 8, background: "#fff" }} />
               ) : (
-                <div className="hint">「PDF全体プレビュー更新」を押すと、実際の出力PDFが下に表示されます。</div>
+                <div className="hint">「PDF全体プレビュー更新」を押すと、実際の出力PDF全体が表示されます。</div>
               )}
             </div>
           </div>

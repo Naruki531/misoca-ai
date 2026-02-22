@@ -16,6 +16,15 @@ function ymdToJa(ymd: string) {
   return `${y}年${m}月${d}日`;
 }
 
+function endOfMonthYmd(runDate: string) {
+  const [y, m, _d] = String(runDate || "").split("-").map((x) => Number(x));
+  const dt = Number.isFinite(y) && Number.isFinite(m) ? new Date(y, m, 0) : new Date();
+  const yyyy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 async function renderDocumentToBuffer(doc: any): Promise<Buffer> {
   const maybeRenderToBuffer = (ReactPdf as any).renderToBuffer;
   if (typeof maybeRenderToBuffer === "function") return await maybeRenderToBuffer(doc);
@@ -43,6 +52,8 @@ export async function POST(req: NextRequest) {
     const prev = blockRows.find((r: any) => String(r?.runDate) < runDate);
     const prevValues = resolveBlockRowValues(String(prev?.runDate || runDate), blockKeys, prev?.values || {}, {});
     const blockValues = resolveBlockRowValues(runDate, blockKeys, row?.values || {}, prevValues);
+    blockValues.BLOCK_RUN_DATE = runDate;
+    blockValues.BLOCK_RUN_EOM = endOfMonthYmd(runDate);
 
     const fieldTemplates = body?.fieldTemplates && typeof body.fieldTemplates === "object" ? body.fieldTemplates : {};
 
@@ -53,7 +64,7 @@ export async function POST(req: NextRequest) {
     const src = srcSnap.data() as any;
 
     const applyAll = (v: any) => {
-      const withBlocks = String(v ?? "").replace(/\{\{(BLOCK_[0-9]+)\}\}/g, (_, k: string) => blockValues[k] ?? "");
+      const withBlocks = String(v ?? "").replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, k: string) => blockValues[k] ?? "");
       return applyTextRules(withBlocks, rules, runDate);
     };
 

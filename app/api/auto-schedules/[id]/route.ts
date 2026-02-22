@@ -32,6 +32,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     if (typeof body?.active === "boolean") patch.active = body.active;
     if (typeof body?.autoSend === "boolean") patch.autoSend = body.autoSend;
     if (typeof body?.toEmail === "string") patch.toEmail = body.toEmail.trim();
+    if (typeof body?.toName === "string") patch.toName = body.toName.trim();
     if (Array.isArray(body?.rules)) {
       patch.rules = body.rules
         .map((r: any) => ({

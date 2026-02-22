@@ -17,6 +17,7 @@ export type AutoScheduleDoc = {
   active: boolean;
   autoSend?: boolean;
   toEmail?: string;
+  toName?: string;
   rules?: AutoRule[];
   fieldTemplates?: {
     instructionTextTemplate?: string;
@@ -76,9 +77,18 @@ function withRules(value: any, rules: AutoRule[], runDate: string) {
 }
 
 function withBlocks(value: any, values: Record<string, string>) {
-  return String(value ?? "").replace(/\{\{(BLOCK_[0-9]+)\}\}/g, (_, key: string) => {
+  return String(value ?? "").replace(/\{\{([A-Z0-9_]+)\}\}/g, (_, key: string) => {
     return values[key] ?? "";
   });
+}
+
+function endOfMonthYmd(runDate: string) {
+  const [y, m, _d] = String(runDate || "").split("-").map((x) => Number(x));
+  const base = Number.isFinite(y) && Number.isFinite(m) ? new Date(y, m, 0) : new Date();
+  const yyyy = base.getFullYear();
+  const mm = String(base.getMonth() + 1).padStart(2, "0");
+  const dd = String(base.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 function calcTotals(items: any[]) {
@@ -119,6 +129,8 @@ export async function runAutoSchedule(uid: string, scheduleId: string, runDate: 
     blockValues as any,
     prevResolved
   );
+  expandedBlockValues.BLOCK_RUN_DATE = runDate;
+  expandedBlockValues.BLOCK_RUN_EOM = endOfMonthYmd(runDate);
   const fieldTemplates = schedule.fieldTemplates ?? {};
   const applyAll = (v: any) => withRules(withBlocks(v, expandedBlockValues), rules, runDate);
 
@@ -229,7 +241,7 @@ export async function runAutoSchedule(uid: string, scheduleId: string, runDate: 
       subject: `請求書 ${newDraft.subject || ""}`.trim(),
       html: `
         <div>
-          <p>${client.name ? `${client.name} 様` : ""}</p>
+          <p>${schedule.toName ? `${schedule.toName} 様` : client.name ? `${client.name} 様` : ""}</p>
           <p>定期請求書を送付いたします。添付PDFをご確認ください。</p>
           <p>件名: ${newDraft.subject || ""}</p>
           <p>請求日: ${ymdToJa(newDraft.issueDate)}</p>
